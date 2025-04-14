@@ -124,25 +124,56 @@ struct DailySchedule {
         print("Daily Medicine Schedule for \(formatDate(date))")
         print("------------------------------------------")
         
-        // Group doses by time
-        var dosesByTime: [String: [ScheduledDose]] = [:]
+        // Create a combined timeline of events and doses
+        var timelineByTime: [String: [(isEvent: Bool, name: String, details: String)]] = [:]
         
-        for dose in scheduledDoses {
-            if dosesByTime[dose.event.time] == nil {
-                dosesByTime[dose.event.time] = []
+        // Add daily events to the timeline
+        for event in events {
+            if timelineByTime[event.time] == nil {
+                timelineByTime[event.time] = []
             }
-            dosesByTime[dose.event.time]?.append(dose)
+            
+            // Format the event entry
+            var eventDetails = ""
+            switch event.type {
+            case .wakeUp:
+                eventDetails = "Start of day"
+            case .meal:
+                eventDetails = "Meal time"
+            case .sleep:
+                eventDetails = "End of day"
+            case .medicineTime:
+                eventDetails = "Medicine time"
+            }
+            
+            timelineByTime[event.time]?.append((isEvent: true, name: event.name, details: eventDetails))
         }
         
-        // Sort times and print schedule
-        let sortedTimes = dosesByTime.keys.sorted()
+        // Add medicine doses to the timeline
+        for dose in scheduledDoses {
+            if timelineByTime[dose.event.time] == nil {
+                timelineByTime[dose.event.time] = []
+            }
+            
+            // Format the dose entry
+            let doseDetails = dose.notes.isEmpty ? dose.quantity : "\(dose.quantity) - \(dose.notes)"
+            timelineByTime[dose.event.time]?.append((isEvent: false, name: dose.medicine.name, details: doseDetails))
+        }
+        
+        // Sort times and print timeline
+        let sortedTimes = timelineByTime.keys.sorted()
         
         for time in sortedTimes {
             print("\(time):")
-            for dose in dosesByTime[time]! {
-                print("  - \(dose.medicine.name): \(dose.quantity)")
-                if !dose.notes.isEmpty {
-                    print("    Note: \(dose.notes)")
+            
+            // Sort to show events first, then medicines
+            let sortedEntries = timelineByTime[time]!.sorted { $0.isEvent && !$1.isEvent }
+            
+            for entry in sortedEntries {
+                if entry.isEvent {
+                    print("  📅 \(entry.name) - \(entry.details)")
+                } else {
+                    print("  💊 \(entry.name): \(entry.details)")
                 }
             }
             print("")
