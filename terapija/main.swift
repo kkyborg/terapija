@@ -421,88 +421,6 @@ class MedicineScheduler {
     }
     
     private func findSuitableEventsFor(medicine: Medicine, dosesPerDay: Int) -> [DailyEvent] {
-        var suitableEvents: [DailyEvent] = []
-        var candidateEvents: [DailyEvent] = []
-        
-        // Check for separation constraints first
-        let separationConstraints = medicine.timingRules.compactMap { rule -> (String, Int)? in
-            if case .separationFromMedicine(let medicineName, let minutes) = rule {
-                return (medicineName, minutes)
-            }
-            return nil
-        }
-        
-        // Get all possible candidate events
-        candidateEvents = findCandidateEvents(for: medicine, dosesPerDay: dosesPerDay)
-        
-        // If this medicine has separation constraints, filter the candidates
-        if !separationConstraints.isEmpty {
-            for event in candidateEvents {
-                var isValid = true
-                
-                for (medicineName, separationMinutes) in separationConstraints {
-                    // Check if the medicine to be separated from is scheduled at this time
-                    if let medicinesAtThisTime = scheduledMedicinesByTime[event.time], 
-                       medicinesAtThisTime.contains(where: { $0.name == medicineName }) {
-                        isValid = false
-                        break
-                    }
-                    
-                    // Check nearby times for separation constraints (ensure proper time separation)
-                    if !checkTimeSeparation(event: event, fromMedicine: medicineName, minutes: separationMinutes) {
-                        isValid = false
-                        break
-                    }
-                }
-                
-                if isValid {
-                    suitableEvents.append(event)
-                    
-                    // Limit to the required number of doses
-                    if suitableEvents.count >= dosesPerDay {
-                        break
-                    }
-                }
-            }
-            
-            // If we couldn't find enough suitable times, create custom times
-            if suitableEvents.count < dosesPerDay {
-                let additionalEvents = createSeparatedEvents(for: medicine, 
-                                                             currentEvents: suitableEvents, 
-                                                             separationConstraints: separationConstraints, 
-                                                             neededCount: dosesPerDay - suitableEvents.count)
-                suitableEvents.append(contentsOf: additionalEvents)
-            }
-        } else {
-            // No separation constraints, all candidates are suitable
-            suitableEvents = Array(candidateEvents.prefix(dosesPerDay))
-        }
-        
-        return suitableEvents
-    }
-    
-    // Check if a potential event time has proper separation from other scheduled medicines
-    private func checkTimeSeparation(event: DailyEvent, fromMedicine medicineName: String, minutes: Int) -> Bool {
-        let eventTimeComponents = event.time.split(separator: ":").map { Int($0) ?? 0 }
-        let eventTimeMinutes = eventTimeComponents[0] * 60 + eventTimeComponents[1]
-        
-        for (otherTime, medicinesAtTime) in scheduledMedicinesByTime {
-            if medicinesAtTime.contains(where: { $0.name == medicineName }) {
-                let otherTimeComponents = otherTime.split(separator: ":").map { Int($0) ?? 0 }
-                let otherTimeMinutes = otherTimeComponents[0] * 60 + otherTimeComponents[1]
-                
-                let timeDifference = abs(eventTimeMinutes - otherTimeMinutes)
-                if timeDifference < minutes {
-                    return false
-                }
-            }
-        }
-        
-        return true
-    }
-    
-    // Generate candidate events for a medicine based on its general requirements
-    private func findCandidateEvents(for medicine: Medicine, dosesPerDay: Int) -> [DailyEvent] {
         var candidates: [DailyEvent] = []
         
         // Special case for Eutirox - must be taken 30-60 minutes before breakfast
@@ -530,6 +448,56 @@ class MedicineScheduler {
                 )
                 
                 candidates.append(beforeBreakfastEvent)
+                return candidates // Return immediately as this is a specific requirement
+            }
+        }
+        
+        // Special case for Heferal - must be taken on empty stomach with vitamin C
+        if medicine.name == "Heferal" {
+            // Create two events for Heferal, evenly spaced throughout the day, on empty stomach
+            if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }),
+               let dinner = dailyEvents.first(where: { $0.name == "Dinner" }) {
+                
+                // 1. Morning dose: 1 hour before breakfast
+                let morningComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
+                var morningHour = morningComponents[0]
+                var morningMinute = morningComponents[1] - 60 // 1 hour before breakfast
+                
+                if morningMinute < 0 {
+                    morningMinute += 60
+                    morningHour -= 1
+                    if morningHour < 0 {
+                        morningHour += 24
+                    }
+                }
+                
+                let morningTime = String(format: "%02d:%02d", morningHour, morningMinute)
+                let morningEvent = DailyEvent(
+                    name: "Before Breakfast (for Heferal)",
+                    type: .medicineTime,
+                    time: morningTime,
+                    timeSinceLastMeal: 480 // Assuming 8 hours since dinner
+                )
+                
+                // 2. Evening dose: 2 hours after dinner
+                let eveningComponents = dinner.time.split(separator: ":").map { Int($0) ?? 0 }
+                var eveningHour = eveningComponents[0] + 2 // 2 hours after dinner
+                let eveningMinute = eveningComponents[1]
+                
+                if eveningHour >= 24 {
+                    eveningHour -= 24
+                }
+                
+                let eveningTime = String(format: "%02d:%02d", eveningHour, eveningMinute)
+                let eveningEvent = DailyEvent(
+                    name: "After Dinner (for Heferal)",
+                    type: .medicineTime,
+                    time: eveningTime,
+                    timeSinceLastMeal: 120 // 2 hours after dinner
+                )
+                
+                candidates.append(morningEvent)
+                candidates.append(eveningEvent)
                 return candidates // Return immediately as this is a specific requirement
             }
         }
@@ -610,6 +578,26 @@ class MedicineScheduler {
         }
         
         return candidates
+    }
+    
+    // Check if a potential event time has proper separation from other scheduled medicines
+    private func checkTimeSeparation(event: DailyEvent, fromMedicine medicineName: String, minutes: Int) -> Bool {
+        let eventTimeComponents = event.time.split(separator: ":").map { Int($0) ?? 0 }
+        let eventTimeMinutes = eventTimeComponents[0] * 60 + eventTimeComponents[1]
+        
+        for (otherTime, medicinesAtTime) in scheduledMedicinesByTime {
+            if medicinesAtTime.contains(where: { $0.name == medicineName }) {
+                let otherTimeComponents = otherTime.split(separator: ":").map { Int($0) ?? 0 }
+                let otherTimeMinutes = otherTimeComponents[0] * 60 + otherTimeComponents[1]
+                
+                let timeDifference = abs(eventTimeMinutes - otherTimeMinutes)
+                if timeDifference < minutes {
+                    return false
+                }
+            }
+        }
+        
+        return true
     }
     
     // Create custom events that satisfy separation constraints
@@ -755,6 +743,18 @@ class MedicineScheduler {
             }
         } else if medicine.name == "Eutirox" && event.name.contains("Before Breakfast") {
             relevantNotes.append("Take 30-60 minutes before breakfast on empty stomach")
+        } else if medicine.name == "Heferal" {
+            // Always include the vitamin C note for Heferal
+            if !relevantNotes.contains("Take with vitamin C or citrus") {
+                relevantNotes.append("Take with vitamin C or citrus")
+            }
+            
+            // Add empty stomach note
+            if event.name.contains("Before Breakfast") {
+                relevantNotes.append("Take 1 hour before breakfast on empty stomach")
+            } else if event.name.contains("After Dinner") {
+                relevantNotes.append("Take 2 hours after dinner on empty stomach")
+            }
         }
         
         return relevantNotes.joined(separator: "; ")
