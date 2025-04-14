@@ -29,7 +29,7 @@ struct Medicine {
                     return false
                 }
             case .specificMeal(let meal):
-                if dailyEvent.type != .meal || dailyEvent.name != meal {
+                if dailyEvent.type != .meal || dailyEvent.name.lowercased() != meal.lowercased() {
                     return false
                 }
             case .specificTime(let time):
@@ -255,11 +255,12 @@ class MedicineParser {
         if instructions.contains("on empty stomach") {
             rules.append(.emptyStomach)
         }
-        if instructions.contains("after breakfast") {
-            rules.append(.specificMeal("breakfast"))
+        if instructions.contains("after breakfast") || instructions.contains("recommended after breakfast") {
+            rules.append(.specificMeal("Breakfast"))
+            notes.append("Take after breakfast")
         }
         if instructions.contains("with the dinner") {
-            rules.append(.specificMeal("dinner"))
+            rules.append(.specificMeal("Dinner"))
         }
         
         // Parse separation from other medicines - improved to catch more patterns
@@ -394,7 +395,7 @@ class MedicineScheduler {
             }.first ?? 1 // Default to once per day if not specified
             
             // Find suitable events for this medicine based on its rules
-            let suitableEvents = findSuitableEventsFor(medicine: medicine, dosesPerDay: dosesPerDay)
+            let suitableEvents = findCandidateEvents(for: medicine, dosesPerDay: dosesPerDay)
             
             // Keep track of which medicines are scheduled at which times
             for event in suitableEvents {
@@ -420,7 +421,7 @@ class MedicineScheduler {
         }
     }
     
-    private func findSuitableEventsFor(medicine: Medicine, dosesPerDay: Int) -> [DailyEvent] {
+    private func findCandidateEvents(for medicine: Medicine, dosesPerDay: Int) -> [DailyEvent] {
         var candidates: [DailyEvent] = []
         
         // Special case for Eutirox - must be taken 30-60 minutes before breakfast
@@ -502,6 +503,51 @@ class MedicineScheduler {
             }
         }
         
+        // Special case for Utrogestan - when taken multiple times per day, 
+        // include a dose right before bedtime
+        if medicine.name == "Utrogestan 200mg" && dosesPerDay > 1 {
+            if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }),
+               let sleepEvent = dailyEvents.first(where: { $0.type == .sleep }) {
+                
+                // Always include breakfast time for the first dose
+                candidates.append(breakfast)
+                
+                // For the last dose, use 30 minutes before sleep
+                let sleepComponents = sleepEvent.time.split(separator: ":").map { Int($0) ?? 0 }
+                var beforeSleepHour = sleepComponents[0]
+                var beforeSleepMinute = sleepComponents[1] - 30
+                
+                if beforeSleepMinute < 0 {
+                    beforeSleepMinute += 60
+                    beforeSleepHour -= 1
+                    if beforeSleepHour < 0 {
+                        beforeSleepHour += 24
+                    }
+                }
+                
+                let beforeSleepTime = String(format: "%02d:%02d", beforeSleepHour, beforeSleepMinute)
+                let beforeSleepEvent = DailyEvent(
+                    name: "Before Sleep (for Utrogestan)",
+                    type: .medicineTime,
+                    time: beforeSleepTime
+                )
+                
+                candidates.append(beforeSleepEvent)
+                
+                // If 3 doses per day, add a midday dose
+                if dosesPerDay == 3 {
+                    if let lunch = dailyEvents.first(where: { $0.name == "Lunch" }) {
+                        candidates.append(lunch)
+                    }
+                }
+                
+                // Sort by time to ensure proper sequencing
+                candidates.sort { $0.time < $1.time }
+                
+                return candidates
+            }
+        }
+        
         // Check for specific timing rules
         let hasSpecificTiming = medicine.timingRules.contains { rule in
             if case .specificMeal(_) = rule { return true }
@@ -512,38 +558,96 @@ class MedicineScheduler {
         if hasSpecificTiming {
             // Handle medicines with specific timing requirements
             for event in dailyEvents {
+                // For specific meals, case-insensitive comparison
                 if medicine.canBeTakenAt(dailyEvent: event, takenMedicines: []) {
                     candidates.append(event)
                 }
             }
         } else {
-            // For medicines without specific timing, distribute evenly throughout the day
-            let mealEvents = dailyEvents.filter { $0.type == .meal }
+            // Distribute medicines evenly throughout the active day
             
-            if dosesPerDay == 1 {
-                // If once per day, prefer breakfast unless there are specific rules
-                if let breakfast = mealEvents.first(where: { $0.name == "Breakfast" }) {
+            // Calculate wakeup and sleep times to determine the active day duration
+            let wakeUpEvent = dailyEvents.first(where: { $0.type == .wakeUp }) ?? dailyEvents.first!
+            let sleepEvent = dailyEvents.first(where: { $0.type == .sleep }) ?? dailyEvents.last!
+            
+            // Convert times to minutes since midnight for easier calculations
+            let wakeUpComponents = wakeUpEvent.time.split(separator: ":").map { Int($0) ?? 0 }
+            let sleepComponents = sleepEvent.time.split(separator: ":").map { Int($0) ?? 0 }
+            
+            let wakeUpMinutes = wakeUpComponents[0] * 60 + wakeUpComponents[1]
+            let sleepMinutes = sleepComponents[0] * 60 + sleepComponents[1]
+            
+            // Calculate active day duration, handling case where sleep is past midnight
+            let activeDayMinutes = sleepMinutes > wakeUpMinutes ? sleepMinutes - wakeUpMinutes : (24 * 60 - wakeUpMinutes) + sleepMinutes
+            
+            if dosesPerDay > 1 {
+                // Calculate evenly spaced time intervals
+                let interval = activeDayMinutes / dosesPerDay
+                
+                for i in 0..<dosesPerDay {
+                    // Calculate target time in minutes from wakeup
+                    let targetMinutesFromWakeup = i * interval
+                    
+                    // Convert to absolute minutes since midnight
+                    let targetMinutes = (wakeUpMinutes + targetMinutesFromWakeup) % (24 * 60)
+                    
+                    // Convert back to hour:minute format
+                    let hour = targetMinutes / 60
+                    let minute = targetMinutes % 60
+                    
+                    let timeString = String(format: "%02d:%02d", hour, minute)
+                    
+                    // Check if this time aligns with an existing event (like a meal)
+                    if let existingEvent = findClosestEvent(to: timeString, preferMeals: true, maxMinutesDiff: 30) {
+                        candidates.append(existingEvent)
+                    } else {
+                        // Create a new medicine event
+                        let newEvent = DailyEvent(
+                            name: "Medicine Time",
+                            type: .medicineTime,
+                            time: timeString
+                        )
+                        candidates.append(newEvent)
+                    }
+                }
+                
+                // If we couldn't generate enough events, fall back to using meals
+                if candidates.count < dosesPerDay {
+                    let mealEvents = dailyEvents.filter { $0.type == .meal }
+                    for meal in mealEvents {
+                        if !candidates.contains(where: { $0.time == meal.time }) {
+                            candidates.append(meal)
+                            if candidates.count >= dosesPerDay {
+                                break
+                            }
+                        }
+                    }
+                }
+                
+                // Sort by time to ensure proper sequencing
+                candidates.sort { $0.time < $1.time }
+                
+            } else if dosesPerDay == 1 {
+                // If only one dose per day, prefer a meal time if not otherwise specified
+                let mealEvents = dailyEvents.filter { $0.type == .meal }
+                
+                if let breakfast = mealEvents.first(where: { $0.name.lowercased() == "breakfast" }) {
                     candidates.append(breakfast)
                 } else if let firstMeal = mealEvents.first {
                     candidates.append(firstMeal)
-                }
-            } else if dosesPerDay == 2 {
-                // If twice per day, try to space them out (breakfast and dinner)
-                if let breakfast = mealEvents.first(where: { $0.name == "Breakfast" }),
-                   let dinner = mealEvents.first(where: { $0.name == "Dinner" }) {
-                    candidates.append(breakfast)
-                    candidates.append(dinner)
-                } else if mealEvents.count >= 2 {
-                    candidates.append(mealEvents.first!)
-                    candidates.append(mealEvents.last!)
-                }
-            } else if dosesPerDay == 3 {
-                // If three times per day, try to use all meals
-                for meal in mealEvents {
-                    candidates.append(meal)
-                    if candidates.count >= dosesPerDay {
-                        break
-                    }
+                } else {
+                    // If no meal events, use mid-morning
+                    let midMorningMinutes = wakeUpMinutes + (activeDayMinutes / 4)
+                    let hour = (midMorningMinutes / 60) % 24
+                    let minute = midMorningMinutes % 60
+                    
+                    let timeString = String(format: "%02d:%02d", hour, minute)
+                    let midMorningEvent = DailyEvent(
+                        name: "Morning Medicine Time",
+                        type: .medicineTime,
+                        time: timeString
+                    )
+                    candidates.append(midMorningEvent)
                 }
             }
         }
@@ -580,136 +684,51 @@ class MedicineScheduler {
         return candidates
     }
     
-    // Check if a potential event time has proper separation from other scheduled medicines
-    private func checkTimeSeparation(event: DailyEvent, fromMedicine medicineName: String, minutes: Int) -> Bool {
-        let eventTimeComponents = event.time.split(separator: ":").map { Int($0) ?? 0 }
-        let eventTimeMinutes = eventTimeComponents[0] * 60 + eventTimeComponents[1]
+    // Helper method to find the closest event to a target time
+    private func findClosestEvent(to targetTime: String, preferMeals: Bool, maxMinutesDiff: Int) -> DailyEvent? {
+        let targetComponents = targetTime.split(separator: ":").map { Int($0) ?? 0 }
+        let targetMinutes = targetComponents[0] * 60 + targetComponents[1]
         
-        for (otherTime, medicinesAtTime) in scheduledMedicinesByTime {
-            if medicinesAtTime.contains(where: { $0.name == medicineName }) {
-                let otherTimeComponents = otherTime.split(separator: ":").map { Int($0) ?? 0 }
-                let otherTimeMinutes = otherTimeComponents[0] * 60 + otherTimeComponents[1]
+        var closestEvent: DailyEvent? = nil
+        var smallestDiff = Int.max
+        
+        // First try meal events if preferred
+        if preferMeals {
+            let mealEvents = dailyEvents.filter { $0.type == .meal }
+            
+            for event in mealEvents {
+                let eventComponents = event.time.split(separator: ":").map { Int($0) ?? 0 }
+                let eventMinutes = eventComponents[0] * 60 + eventComponents[1]
                 
-                let timeDifference = abs(eventTimeMinutes - otherTimeMinutes)
-                if timeDifference < minutes {
-                    return false
+                let diff = abs(targetMinutes - eventMinutes)
+                let wrappedDiff = min(diff, 24*60 - diff) // Handle around-midnight cases
+                
+                if wrappedDiff < smallestDiff && wrappedDiff <= maxMinutesDiff {
+                    smallestDiff = wrappedDiff
+                    closestEvent = event
                 }
             }
-        }
-        
-        return true
-    }
-    
-    // Create custom events that satisfy separation constraints
-    private func createSeparatedEvents(for medicine: Medicine, 
-                                       currentEvents: [DailyEvent], 
-                                       separationConstraints: [(String, Int)], 
-                                       neededCount: Int) -> [DailyEvent] {
-        var additionalEvents: [DailyEvent] = []
-        
-        // Find times when the other medicines are scheduled
-        var conflictingTimes: [String: String] = [:] // Maps time to medicine name
-        
-        for (medicineName, _) in separationConstraints {
-            for (time, medicinesAtTime) in scheduledMedicinesByTime {
-                if medicinesAtTime.contains(where: { $0.name == medicineName }) {
-                    conflictingTimes[time] = medicineName
-                }
-            }
-        }
-        
-        // Create events at different times of day, ensuring separation
-        if neededCount > 0 {
-            // Try to find a time slot in the morning (around 10:00)
-            let morningTime = findTimeSlot(around: "10:00", avoiding: conflictingTimes, separationConstraints: separationConstraints)
-            if let morningTime = morningTime, !currentEvents.contains(where: { $0.time == morningTime.time }) {
-                additionalEvents.append(morningTime)
-            }
-        }
-        
-        if additionalEvents.count < neededCount {
-            // Try to find a time slot in the afternoon (around 16:00)
-            let afternoonTime = findTimeSlot(around: "16:00", avoiding: conflictingTimes, separationConstraints: separationConstraints)
-            if let afternoonTime = afternoonTime, !currentEvents.contains(where: { $0.time == afternoonTime.time }) {
-                additionalEvents.append(afternoonTime)
-            }
-        }
-        
-        // Add more time slots if needed
-        if additionalEvents.count < neededCount {
-            // Try late evening (around 22:00)
-            let eveningTime = findTimeSlot(around: "22:00", avoiding: conflictingTimes, separationConstraints: separationConstraints)
-            if let eveningTime = eveningTime, !currentEvents.contains(where: { $0.time == eveningTime.time }) {
-                additionalEvents.append(eveningTime)
-            }
-        }
-        
-        return Array(additionalEvents.prefix(neededCount))
-    }
-    
-    // Find a suitable time slot around a given time
-    private func findTimeSlot(around baseTime: String, 
-                              avoiding conflictingTimes: [String: String], 
-                              separationConstraints: [(String, Int)]) -> DailyEvent? {
-        // Parse the base time
-        let components = baseTime.split(separator: ":").map { Int($0) ?? 0 }
-        let baseHour = components[0]
-        let baseMinute = components[0]
-        let baseMinutes = baseHour * 60 + baseMinute
-        
-        // Check the exact time first
-        let exactTimeString = String(format: "%02d:%02d", baseHour, baseMinute)
-        if !conflictingTimes.keys.contains(exactTimeString) && 
-           checkAllSeparations(time: exactTimeString, constraints: separationConstraints) {
-            return DailyEvent(name: "Medicine Time", type: .medicineTime, time: exactTimeString)
-        }
-        
-        // Try offsets around the base time
-        for offsetMinutes in [30, -30, 60, -60, 90, -90] {
-            let adjustedMinutes = baseMinutes + offsetMinutes
-            var hour = adjustedMinutes / 60
-            let minute = adjustedMinutes % 60
             
-            // Ensure we're within a day
-            if hour < 0 {
-                hour += 24
-            } else if hour >= 24 {
-                hour -= 24
-            }
-            
-            let timeString = String(format: "%02d:%02d", hour, minute)
-            
-            // Check if this time is viable
-            if !conflictingTimes.keys.contains(timeString) && 
-               checkAllSeparations(time: timeString, constraints: separationConstraints) {
-                return DailyEvent(name: "Medicine Time", type: .medicineTime, time: timeString)
+            if closestEvent != nil {
+                return closestEvent
             }
         }
         
-        return nil
-    }
-    
-    // Check that a time satisfies all separation constraints
-    private func checkAllSeparations(time: String, constraints: [(String, Int)]) -> Bool {
-        let timeComponents = time.split(separator: ":").map { Int($0) ?? 0 }
-        let timeMinutes = timeComponents[0] * 60 + timeComponents[1]
-        
-        // Check each constraint
-        for (medicineName, requiredMinutes) in constraints {
-            for (otherTime, medicinesAtTime) in scheduledMedicinesByTime {
-                if medicinesAtTime.contains(where: { $0.name == medicineName }) {
-                    let otherComponents = otherTime.split(separator: ":").map { Int($0) ?? 0 }
-                    let otherMinutes = otherComponents[0] * 60 + otherComponents[1]
-                    
-                    let timeDifference = abs(timeMinutes - otherMinutes)
-                    if timeDifference < requiredMinutes {
-                        return false
-                    }
-                }
+        // If no meal event is close enough or meals not preferred, check all events
+        for event in dailyEvents {
+            let eventComponents = event.time.split(separator: ":").map { Int($0) ?? 0 }
+            let eventMinutes = eventComponents[0] * 60 + eventComponents[1]
+            
+            let diff = abs(targetMinutes - eventMinutes)
+            let wrappedDiff = min(diff, 24*60 - diff) // Handle around-midnight cases
+            
+            if wrappedDiff < smallestDiff && wrappedDiff <= maxMinutesDiff {
+                smallestDiff = wrappedDiff
+                closestEvent = event
             }
         }
         
-        return true
+        return closestEvent
     }
     
     private func determineQuantity(for medicine: Medicine) -> String {
@@ -755,6 +774,8 @@ class MedicineScheduler {
             } else if event.name.contains("After Dinner") {
                 relevantNotes.append("Take 2 hours after dinner on empty stomach")
             }
+        } else if medicine.name == "Utrogestan 200mg" && event.name.contains("Before Sleep") {
+            relevantNotes.append("Take 30 minutes before sleep for better sleep quality")
         }
         
         return relevantNotes.joined(separator: "; ")
@@ -856,4 +877,6 @@ let schedule = scheduler.generateSchedule()
 // Print the schedule
 print("\nYour Daily Medicine Schedule:")
 schedule.printSchedule()
+
+
 
