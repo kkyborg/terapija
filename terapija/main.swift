@@ -263,6 +263,13 @@ class MedicineParser {
             rules.append(.specificMeal("Dinner"))
         }
         
+        // Parse timing relative to other medicines
+        if instructions.contains("before taking the food and any other medicines") || 
+           instructions.contains("before any other medicines") {
+            rules.append(.custom(description: "Take before any other medicines"))
+            notes.append("Must be taken before any other medicines")
+        }
+        
         // Parse separation from other medicines - improved to catch more patterns
         if instructions.contains("apart from") {
             // Specifically look for Nifelat and Utrogestan separation
@@ -330,6 +337,7 @@ class MedicineScheduler {
     private let medicines: [Medicine]
     private var dailyEvents: [DailyEvent] = []
     private var scheduledMedicinesByTime: [String: [Medicine]] = [:]
+    private var scheduledDoses: [ScheduledDose] = [] // Keep track of all scheduled doses
     
     init(medicines: [Medicine]) {
         self.medicines = medicines
@@ -349,35 +357,121 @@ class MedicineScheduler {
     }
     
     func generateSchedule() -> DailySchedule {
-        var scheduledDoses: [ScheduledDose] = []
+        var finalScheduledDoses: [ScheduledDose] = []
         scheduledMedicinesByTime = [:]
+        scheduledDoses = [] // Reset tracked doses
+        var eutiroxTime: String? = nil
         
-        // First, separate medicines with separation constraints from those without
+        // First, handle Eutirox separately since it must be taken before all other medicines
+        if let eutirox = medicines.first(where: { $0.name == "Eutirox" }) {
+            // Schedule Eutirox first, before any other medicine
+            scheduleSpecificMedicine(eutirox, into: &finalScheduledDoses)
+            
+            // Record the time Eutirox is scheduled
+            if let eutiroxDose = finalScheduledDoses.first(where: { $0.medicine.name == "Eutirox" }) {
+                eutiroxTime = eutiroxDose.event.time
+            }
+        }
+        
+        // Ensure the wakeup time is after Eutirox for all other medicines
+        var adjustedDailyEvents = dailyEvents
+        if let eutiroxTime = eutiroxTime,
+           let wakeUpEvent = dailyEvents.first(where: { $0.type == .wakeUp }) {
+            // Create a new wake up event that's after Eutirox
+            let eutiroxComponents = eutiroxTime.split(separator: ":").map { Int($0) ?? 0 }
+            let eutiroxMinutes = eutiroxComponents[0] * 60 + eutiroxComponents[1]
+            
+            // Add 10 minutes to ensure it's after Eutirox
+            let newWakeUpMinutes = eutiroxMinutes + 10
+            let newWakeUpHour = newWakeUpMinutes / 60
+            let newWakeUpMinute = newWakeUpMinutes % 60
+            
+            let newWakeUpTime = String(format: "%02d:%02d", newWakeUpHour, newWakeUpMinute)
+            
+            // Create a new wake up event that comes after Eutirox
+            let newWakeUpEvent = DailyEvent(
+                name: wakeUpEvent.name,
+                type: wakeUpEvent.type,
+                time: newWakeUpTime,
+                timeSinceLastMeal: wakeUpEvent.timeSinceLastMeal
+            )
+            
+            // Replace the old wake up event with the new one
+            adjustedDailyEvents.removeAll { $0.type == .wakeUp }
+            adjustedDailyEvents.append(newWakeUpEvent)
+            
+            // Sort events by time again
+            adjustedDailyEvents.sort { $0.time < $1.time }
+        }
+        
+        // Use the adjusted daily events for the rest of the scheduling
+        let originalDailyEvents = dailyEvents
+        dailyEvents = adjustedDailyEvents
+        
+        // Then separate medicines with separation constraints from those without
         let medicinesWithSeparation = medicines.filter { medicine in
-            medicine.timingRules.contains { rule in
+            medicine.name != "Eutirox" && medicine.timingRules.contains { rule in
                 if case .separationFromMedicine(_, _) = rule { return true }
                 return false
             }
         }
         
         let medicinesWithoutSeparation = medicines.filter { medicine in
-            !medicinesWithSeparation.contains { $0.name == medicine.name }
+            medicine.name != "Eutirox" && !medicinesWithSeparation.contains { $0.name == medicine.name }
         }
         
         // Schedule medicines without separation constraints first
-        scheduleMultipleMedicines(medicinesWithoutSeparation, into: &scheduledDoses)
+        scheduleMultipleMedicines(medicinesWithoutSeparation, into: &finalScheduledDoses)
         
         // Then schedule medicines with separation constraints
-        scheduleMultipleMedicines(medicinesWithSeparation, into: &scheduledDoses)
+        scheduleMultipleMedicines(medicinesWithSeparation, into: &finalScheduledDoses)
         
         // SPECIAL HANDLING: Detect and fix specific Nifelat/Utrogestan conflict
-        fixNifelatUtrogestanConflict(&scheduledDoses)
+        fixNifelatUtrogestanConflict(&finalScheduledDoses)
+        
+        // Restore original daily events
+        dailyEvents = originalDailyEvents
         
         return DailySchedule(
             date: Date(),
             events: dailyEvents,
-            scheduledDoses: scheduledDoses
+            scheduledDoses: finalScheduledDoses
         )
+    }
+    
+    private func scheduleSpecificMedicine(_ medicine: Medicine, into scheduledDoses: inout [ScheduledDose]) {
+        let dosesPerDay = medicine.timingRules.compactMap { rule -> Int? in
+            if case .timesPerDay(let count) = rule {
+                return count
+            }
+            return nil
+        }.first ?? 1 // Default to once per day if not specified
+        
+        // Find suitable events for this medicine based on its rules
+        let suitableEvents = findCandidateEvents(for: medicine, dosesPerDay: dosesPerDay)
+        
+        // Keep track of which medicines are scheduled at which times
+        for event in suitableEvents {
+            // Determine quantity based on medicine-specific rules
+            let quantity = determineQuantity(for: medicine, at: event, dosesPerDay: dosesPerDay)
+            
+            // Add this medicine to the schedule
+            let dose = ScheduledDose(
+                medicine: medicine,
+                event: event,
+                quantity: quantity,
+                notes: getNotes(for: medicine, at: event)
+            )
+            
+            scheduledDoses.append(dose)
+            self.scheduledDoses.append(dose) // Add to the class property as well
+            
+            // Keep track of what medicines are scheduled at what times
+            if scheduledMedicinesByTime[event.time] == nil {
+                scheduledMedicinesByTime[event.time] = []
+            }
+            scheduledMedicinesByTime[event.time]?.append(medicine)
+        }
     }
     
     private func scheduleMultipleMedicines(_ medicinesToSchedule: [Medicine], into scheduledDoses: inout [ScheduledDose]) {
@@ -400,7 +494,7 @@ class MedicineScheduler {
             // Keep track of which medicines are scheduled at which times
             for event in suitableEvents {
                 // Determine quantity based on medicine-specific rules
-                let quantity = determineQuantity(for: medicine)
+                let quantity = determineQuantity(for: medicine, at: event, dosesPerDay: dosesPerDay)
                 
                 // Add this medicine to the schedule
                 let dose = ScheduledDose(
@@ -411,6 +505,7 @@ class MedicineScheduler {
                 )
                 
                 scheduledDoses.append(dose)
+                self.scheduledDoses.append(dose) // Add to the class property as well
                 
                 // Keep track of what medicines are scheduled at what times
                 if scheduledMedicinesByTime[event.time] == nil {
@@ -425,31 +520,34 @@ class MedicineScheduler {
         var candidates: [DailyEvent] = []
         
         // Special case for Eutirox - must be taken 30-60 minutes before breakfast
+        // AND before any other medicine
         if medicine.name == "Eutirox" {
             if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }) {
-                // Create an event 45 minutes before breakfast (midpoint of 30-60 minute range)
-                let timeComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
-                var hour = timeComponents[0]
-                var minute = timeComponents[1] - 45
                 
-                if minute < 0 {
-                    minute += 60
-                    hour -= 1
-                    if hour < 0 {
-                        hour += 24
+                // Create an event exactly 45 minutes before breakfast (midpoint of 30-60 minute range)
+                let breakfastComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
+                var breakfastHour = breakfastComponents[0]
+                var breakfastMinute = breakfastComponents[1] - 45
+                
+                if breakfastMinute < 0 {
+                    breakfastMinute += 60
+                    breakfastHour -= 1
+                    if breakfastHour < 0 {
+                        breakfastHour += 24
                     }
                 }
                 
-                let timeString = String(format: "%02d:%02d", hour, minute)
-                let beforeBreakfastEvent = DailyEvent(
-                    name: "Before Breakfast (for Eutirox)",
+                // Use exactly 45 minutes before breakfast
+                let timeString = String(format: "%02d:%02d", breakfastHour, breakfastMinute)
+                let eutiroxEvent = DailyEvent(
+                    name: "First Medicine of Day (for Eutirox)",
                     type: .medicineTime,
                     time: timeString,
                     timeSinceLastMeal: 480 // Assuming 8 hours since dinner
                 )
                 
-                candidates.append(beforeBreakfastEvent)
-                return candidates // Return immediately as this is a specific requirement
+                candidates.append(eutiroxEvent)
+                return candidates
             }
         }
         
@@ -459,20 +557,42 @@ class MedicineScheduler {
             if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }),
                let dinner = dailyEvents.first(where: { $0.name == "Dinner" }) {
                 
-                // 1. Morning dose: 1 hour before breakfast
-                let morningComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
-                var morningHour = morningComponents[0]
-                var morningMinute = morningComponents[1] - 60 // 1 hour before breakfast
+                // Check if Eutirox is already scheduled
+                var morningTime = ""
                 
-                if morningMinute < 0 {
-                    morningMinute += 60
-                    morningHour -= 1
-                    if morningHour < 0 {
-                        morningHour += 24
+                if let eutiroxEntry = scheduledMedicinesByTime.first(where: { $0.value.contains(where: { $0.name == "Eutirox" }) }) {
+                    // Eutirox is scheduled, ensure Heferal comes after it
+                    let eutiroxComponents = eutiroxEntry.key.split(separator: ":").map { Int($0) ?? 0 }
+                    let eutiroxMinutes = eutiroxComponents[0] * 60 + eutiroxComponents[1]
+                    
+                    // Calculate 1 hour before breakfast
+                    let breakfastComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
+                    let breakfastMinutes = breakfastComponents[0] * 60 + breakfastComponents[1]
+                    let idealMorningMinutes = breakfastMinutes - 60
+                    
+                    // Take the later of: 1 hour before breakfast or 15 minutes after Eutirox
+                    let adjustedMorningMinutes = max(idealMorningMinutes, eutiroxMinutes + 15)
+                    let morningHour = adjustedMorningMinutes / 60
+                    let morningMinute = adjustedMorningMinutes % 60
+                    
+                    morningTime = String(format: "%02d:%02d", morningHour, morningMinute)
+                } else {
+                    // Eutirox not scheduled yet, use regular timing (1 hour before breakfast)
+                    let morningComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
+                    var morningHour = morningComponents[0]
+                    var morningMinute = morningComponents[1] - 60 // 1 hour before breakfast
+                    
+                    if morningMinute < 0 {
+                        morningMinute += 60
+                        morningHour -= 1
+                        if morningHour < 0 {
+                            morningHour += 24
+                        }
                     }
+                    
+                    morningTime = String(format: "%02d:%02d", morningHour, morningMinute)
                 }
                 
-                let morningTime = String(format: "%02d:%02d", morningHour, morningMinute)
                 let morningEvent = DailyEvent(
                     name: "Before Breakfast (for Heferal)",
                     type: .medicineTime,
@@ -546,6 +666,104 @@ class MedicineScheduler {
                 
                 return candidates
             }
+        }
+        
+        // Special case for Aleract and Inofolic combi - prefer with meals
+        if (medicine.name == "Aleract" || medicine.name == "Inofolic combi") {
+            // These medicines don't require empty stomach, so prefer with meals
+            let mealEvents = dailyEvents.filter { $0.type == .meal }
+            
+            if dosesPerDay > 1 {
+                if mealEvents.count >= dosesPerDay {
+                    // If we have enough meal events, use them
+                    for i in 0..<min(dosesPerDay, mealEvents.count) {
+                        candidates.append(mealEvents[i])
+                    }
+                } else {
+                    // Not enough meal events, use meals plus evenly spaced times
+                    candidates.append(contentsOf: mealEvents)
+                    
+                    // Calculate wakeup and sleep times to determine the active day duration
+                    let wakeUpEvent = dailyEvents.first(where: { $0.type == .wakeUp }) ?? dailyEvents.first!
+                    let sleepEvent = dailyEvents.first(where: { $0.type == .sleep }) ?? dailyEvents.last!
+                    
+                    // Convert times to minutes since midnight for easier calculations
+                    let wakeUpComponents = wakeUpEvent.time.split(separator: ":").map { Int($0) ?? 0 }
+                    let sleepComponents = sleepEvent.time.split(separator: ":").map { Int($0) ?? 0 }
+                    
+                    let wakeUpMinutes = wakeUpComponents[0] * 60 + wakeUpComponents[1]
+                    let sleepMinutes = sleepComponents[0] * 60 + sleepComponents[1]
+                    
+                    // Calculate active day duration, handling case where sleep is past midnight
+                    let activeDayMinutes = sleepMinutes > wakeUpMinutes ? sleepMinutes - wakeUpMinutes : (24 * 60 - wakeUpMinutes) + sleepMinutes
+                    
+                    // How many more times do we need to add?
+                    let remainingDoses = dosesPerDay - candidates.count
+                    let interval = activeDayMinutes / (remainingDoses + 1) // +1 to space them properly
+                    
+                    // Skip breakfast time since we'll add it manually
+                    let existingTimes = candidates.map { $0.time }
+                    
+                    // Add remaining doses at evenly spaced intervals
+                    for i in 1...remainingDoses {
+                        // Calculate target time in minutes from wakeup, offset to avoid meal times
+                        let targetMinutesFromWakeup = (i * interval) + 30 // offset by 30 minutes
+                        
+                        // Convert to absolute minutes since midnight
+                        let targetMinutes = (wakeUpMinutes + targetMinutesFromWakeup) % (24 * 60)
+                        
+                        // Convert back to hour:minute format
+                        let hour = targetMinutes / 60
+                        let minute = targetMinutes % 60
+                        
+                        let timeString = String(format: "%02d:%02d", hour, minute)
+                        
+                        // Skip if time already exists
+                        if existingTimes.contains(timeString) {
+                            continue
+                        }
+                        
+                        // Create a new medicine event
+                        let newEvent = DailyEvent(
+                            name: "Medicine Time",
+                            type: .medicineTime,
+                            time: timeString
+                        )
+                        candidates.append(newEvent)
+                    }
+                }
+            } else {
+                // For single dose per day, use breakfast
+                if let breakfast = mealEvents.first(where: { $0.name == "Breakfast" }) {
+                    candidates.append(breakfast)
+                } else if !mealEvents.isEmpty {
+                    // Or any other meal if breakfast not available
+                    candidates.append(mealEvents.first!)
+                } else {
+                    // If no meals, use mid-morning
+                    let wakeUpEvent = dailyEvents.first(where: { $0.type == .wakeUp }) ?? dailyEvents.first!
+                    let wakeUpComponents = wakeUpEvent.time.split(separator: ":").map { Int($0) ?? 0 }
+                    let wakeUpMinutes = wakeUpComponents[0] * 60 + wakeUpComponents[1]
+                    
+                    // 2 hours after wakeup
+                    let midMorningMinutes = wakeUpMinutes + 120
+                    let hour = (midMorningMinutes / 60) % 24
+                    let minute = midMorningMinutes % 60
+                    
+                    let timeString = String(format: "%02d:%02d", hour, minute)
+                    let midMorningEvent = DailyEvent(
+                        name: "Morning Medicine Time",
+                        type: .medicineTime,
+                        time: timeString
+                    )
+                    candidates.append(midMorningEvent)
+                }
+            }
+            
+            // Sort by time to ensure proper sequencing
+            candidates.sort { $0.time < $1.time }
+            
+            return candidates
         }
         
         // Check for specific timing rules
@@ -731,7 +949,7 @@ class MedicineScheduler {
         return closestEvent
     }
     
-    private func determineQuantity(for medicine: Medicine) -> String {
+    private func determineQuantity(for medicine: Medicine, at event: DailyEvent, dosesPerDay: Int) -> String {
         // Special case for Eutirox with rotating schedule
         if medicine.name == "Eutirox" {
             // In a real app, would keep track of the day in the rotation
@@ -740,11 +958,71 @@ class MedicineScheduler {
         
         // Extract dosage information from instructions if available
         if let dosageMatch = medicine.dosageInstructions.range(of: "\\d+mg", options: .regularExpression) {
-            return String(medicine.dosageInstructions[dosageMatch])
+            let dosageText = String(medicine.dosageInstructions[dosageMatch])
+            
+            // If there are multiple doses per day, include which dose this is
+            if dosesPerDay > 1 {
+                // Determine which dose number this is based on time of day
+                let doseNumber = determineDoseNumber(for: medicine, at: event, totalDoses: dosesPerDay)
+                return "\(dosageText) (dose \(doseNumber) of \(dosesPerDay))"
+            }
+            
+            return dosageText
         }
         
-        // Default to "1 dose" if no specific quantity is found
+        // Default quantity with dose numbering for multiple doses
+        if dosesPerDay > 1 {
+            let doseNumber = determineDoseNumber(for: medicine, at: event, totalDoses: dosesPerDay)
+            return "dose \(doseNumber) of \(dosesPerDay)"
+        }
+        
+        // Default to "1 dose" if no specific quantity is found and only one dose per day
         return "1 dose"
+    }
+    
+    // Helper method to determine which dose number this is based on time of day
+    private func determineDoseNumber(for medicine: Medicine, at event: DailyEvent, totalDoses: Int) -> Int {
+        // Get all scheduled events for this medicine
+        // This won't be available for the first dose, so we need a fallback
+        let medicineEvents = findCandidateEvents(for: medicine, dosesPerDay: totalDoses)
+            .sorted { $0.time < $1.time }
+        
+        // If we have pre-determined events, use those for ordering
+        if !medicineEvents.isEmpty {
+            if let index = medicineEvents.firstIndex(where: { $0.time == event.time }) {
+                return index + 1 // 1-based numbering
+            }
+        }
+        
+        // If we couldn't determine from candidate events,
+        // estimate based on time of day relative to wake up and sleep
+        let wakeUpEvent = dailyEvents.first(where: { $0.type == .wakeUp }) ?? dailyEvents.first!
+        let sleepEvent = dailyEvents.first(where: { $0.type == .sleep }) ?? dailyEvents.last!
+        
+        let wakeUpComponents = wakeUpEvent.time.split(separator: ":").map { Int($0) ?? 0 }
+        let sleepComponents = sleepEvent.time.split(separator: ":").map { Int($0) ?? 0 }
+        let eventComponents = event.time.split(separator: ":").map { Int($0) ?? 0 }
+        
+        let wakeUpMinutes = wakeUpComponents[0] * 60 + wakeUpComponents[1]
+        let sleepMinutes = sleepComponents[0] * 60 + sleepComponents[1]
+        let eventMinutes = eventComponents[0] * 60 + eventComponents[1]
+        
+        // Calculate active day duration
+        let activeDayMinutes = sleepMinutes > wakeUpMinutes ? 
+            sleepMinutes - wakeUpMinutes : (24 * 60 - wakeUpMinutes) + sleepMinutes
+        
+        // Calculate how far into the day this event is (as a percentage)
+        let minutesSinceWakeUp = eventMinutes >= wakeUpMinutes ? 
+            eventMinutes - wakeUpMinutes : (eventMinutes + 24 * 60) - wakeUpMinutes
+        
+        let percentOfDay = Double(minutesSinceWakeUp) / Double(activeDayMinutes)
+        
+        // Use percentage to determine which dose this is
+        // First dose is at 0% of day, last dose is at 100% of day
+        let doseIndex = Int(floor(percentOfDay * Double(totalDoses)))
+        
+        // If we're at the very end of the day, ensure we don't exceed total doses
+        return min(doseIndex + 1, totalDoses)
     }
     
     private func getNotes(for medicine: Medicine, at event: DailyEvent) -> String {
@@ -760,8 +1038,8 @@ class MedicineScheduler {
             if medicine.timingRules.contains(.withFood) {
                 relevantNotes.append("Take with food")
             }
-        } else if medicine.name == "Eutirox" && event.name.contains("Before Breakfast") {
-            relevantNotes.append("Take 30-60 minutes before breakfast on empty stomach")
+        } else if medicine.name == "Eutirox" && event.name.contains("First Medicine") {
+            relevantNotes.append("MUST BE TAKEN FIRST! 30-60 minutes before breakfast and any other medicines on empty stomach")
         } else if medicine.name == "Heferal" {
             // Always include the vitamin C note for Heferal
             if !relevantNotes.contains("Take with vitamin C or citrus") {
@@ -801,8 +1079,13 @@ class MedicineScheduler {
             if hasUtrogestan && hasNifelat {
                 print("DEBUG: Found conflict between Nifelat and Utrogestan at \(time)")
                 
-                // Remove Nifelat from this time slot
+                // Remove Nifelat from this time slot in the final list
                 scheduledDoses.removeAll { dose in
+                    return dose.event.time == time && dose.medicine.name == "Nifelat"
+                }
+                
+                // Also remove from our internal tracking
+                self.scheduledDoses.removeAll { dose in
                     return dose.event.time == time && dose.medicine.name == "Nifelat"
                 }
                 
@@ -819,6 +1102,14 @@ class MedicineScheduler {
                 
                 // Find the Nifelat medicine
                 if let nifelatMedicine = medicines.first(where: { $0.name == "Nifelat" }) {
+                    // Determine how many doses per day for Nifelat
+                    let dosesPerDay = nifelatMedicine.timingRules.compactMap { rule -> Int? in
+                        if case .timesPerDay(let count) = rule {
+                            return count
+                        }
+                        return nil
+                    }.first ?? 1
+                    
                     // Create a new event
                     let newEvent = DailyEvent(
                         name: "After Utrogestan (2h separation)",
@@ -826,16 +1117,19 @@ class MedicineScheduler {
                         time: newTime
                     )
                     
-                    // Create a new dose
+                    // Create a new dose with proper numbering
+                    let quantity = determineQuantity(for: nifelatMedicine, at: newEvent, dosesPerDay: dosesPerDay)
                     let newDose = ScheduledDose(
                         medicine: nifelatMedicine,
                         event: newEvent,
-                        quantity: "1 dose",
+                        quantity: quantity,
                         notes: "Must be taken at least 1-2 hours apart from Utrogestan"
                     )
                     
-                    // Add the new dose to the schedule
+                    // Add the new dose to both the final schedule and internal tracking
                     scheduledDoses.append(newDose)
+                    self.scheduledDoses.append(newDose)
+                    
                     print("DEBUG: Moved Nifelat to \(newTime) to avoid conflict with Utrogestan")
                 }
             }

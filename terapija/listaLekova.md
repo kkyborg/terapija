@@ -1,5 +1,5 @@
 
-- Eutirox: 4 days = 50mg + 3 days = 75mg (take it on empty stomach, in the morning, 30-60 minutes before taking the food)
+- Eutirox: 4 days = 50mg + 3 days = 75mg (take it on empty stomach, in the morning, 30-60 minutes before taking the food and 30-60 minutes apart from any other medicines)
 - Aleract: 2x per day
 - Inofolic combi: 2x per day
 - Pronison 5mg: 1x per day (recommended after breakfast)
