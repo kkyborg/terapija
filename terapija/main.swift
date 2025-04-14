@@ -37,17 +37,17 @@ struct Medicine {
                 if dailyEvent.time != time {
                     return false
                 }
-            case .timesPerDay(let count):
+            case .timesPerDay(_):
                 // This would be handled by the scheduler
                 continue
-            case .separationFromMedicine(let medicineName, let minutes):
+            case .separationFromMedicine(let medicineName, _):
                 for takenMedicine in takenMedicines {
                     if takenMedicine == medicineName {
                         // Would need more complex time comparison in a real app
                         return false
                     }
                 }
-            case .custom(let description):
+            case .custom(_):
                 // Custom rules would need special handling
                 continue
             }
@@ -292,7 +292,7 @@ class MedicineParser {
                     let hourRangeComponents = hourRangeText.components(separatedBy: "-")
                     if hourRangeComponents.count == 2, 
                        let minHours = Int(hourRangeComponents[0]),
-                       var maxHours = Int(hourRangeComponents[1].replacingOccurrences(of: "h", with: "")) {
+                       let maxHours = Int(hourRangeComponents[1].replacingOccurrences(of: "h", with: "")) {
                         
                         // Average of the range
                         let avgHours = (minHours + maxHours) / 2
