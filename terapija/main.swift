@@ -320,33 +320,40 @@ class MedicineScheduler {
         var scheduledDoses: [ScheduledDose] = []
         scheduledMedicinesByTime = [:]
         
-        // Add medicine events between daily events as needed
-        // First, sort medicines by constraints (more constrained medicines first)
-        let sortedMedicines = medicines.sorted { med1, med2 in
-            let constraints1 = med1.timingRules.count
-            let constraints2 = med2.timingRules.count
-            
-            // Sort by number of constraints, but prioritize separation constraints
-            let hasSeparation1 = med1.timingRules.contains { rule in
+        // First, separate medicines with separation constraints from those without
+        let medicinesWithSeparation = medicines.filter { medicine in
+            medicine.timingRules.contains { rule in
                 if case .separationFromMedicine(_, _) = rule { return true }
                 return false
             }
-            
-            let hasSeparation2 = med2.timingRules.contains { rule in
-                if case .separationFromMedicine(_, _) = rule { return true }
-                return false
-            }
-            
-            if hasSeparation1 && !hasSeparation2 {
-                return false // med1 should come after
-            } else if !hasSeparation1 && hasSeparation2 {
-                return true // med2 should come after
-            }
-            
-            return constraints1 > constraints2
         }
         
-        // Schedule medicines in order of constraints
+        let medicinesWithoutSeparation = medicines.filter { medicine in
+            !medicinesWithSeparation.contains { $0.name == medicine.name }
+        }
+        
+        // Schedule medicines without separation constraints first
+        scheduleMultipleMedicines(medicinesWithoutSeparation, into: &scheduledDoses)
+        
+        // Then schedule medicines with separation constraints
+        scheduleMultipleMedicines(medicinesWithSeparation, into: &scheduledDoses)
+        
+        // SPECIAL HANDLING: Detect and fix specific Nifelat/Utrogestan conflict
+        fixNifelatUtrogestanConflict(&scheduledDoses)
+        
+        return DailySchedule(
+            date: Date(),
+            events: dailyEvents,
+            scheduledDoses: scheduledDoses
+        )
+    }
+    
+    private func scheduleMultipleMedicines(_ medicinesToSchedule: [Medicine], into scheduledDoses: inout [ScheduledDose]) {
+        // Schedule medicines in order of constraints (most constrained first)
+        let sortedMedicines = medicinesToSchedule.sorted { med1, med2 in
+            return med1.timingRules.count > med2.timingRules.count
+        }
+        
         for medicine in sortedMedicines {
             let dosesPerDay = medicine.timingRules.compactMap { rule -> Int? in
                 if case .timesPerDay(let count) = rule {
@@ -380,17 +387,92 @@ class MedicineScheduler {
                 scheduledMedicinesByTime[event.time]?.append(medicine)
             }
         }
-        
-        return DailySchedule(
-            date: Date(),
-            events: dailyEvents,
-            scheduledDoses: scheduledDoses
-        )
     }
     
     private func findSuitableEventsFor(medicine: Medicine, dosesPerDay: Int) -> [DailyEvent] {
         var suitableEvents: [DailyEvent] = []
         var candidateEvents: [DailyEvent] = []
+        
+        // Check for separation constraints first
+        let separationConstraints = medicine.timingRules.compactMap { rule -> (String, Int)? in
+            if case .separationFromMedicine(let medicineName, let minutes) = rule {
+                return (medicineName, minutes)
+            }
+            return nil
+        }
+        
+        // Get all possible candidate events
+        candidateEvents = findCandidateEvents(for: medicine, dosesPerDay: dosesPerDay)
+        
+        // If this medicine has separation constraints, filter the candidates
+        if !separationConstraints.isEmpty {
+            for event in candidateEvents {
+                var isValid = true
+                
+                for (medicineName, separationMinutes) in separationConstraints {
+                    // Check if the medicine to be separated from is scheduled at this time
+                    if let medicinesAtThisTime = scheduledMedicinesByTime[event.time], 
+                       medicinesAtThisTime.contains(where: { $0.name == medicineName }) {
+                        isValid = false
+                        break
+                    }
+                    
+                    // Check nearby times for separation constraints (ensure proper time separation)
+                    if !checkTimeSeparation(event: event, fromMedicine: medicineName, minutes: separationMinutes) {
+                        isValid = false
+                        break
+                    }
+                }
+                
+                if isValid {
+                    suitableEvents.append(event)
+                    
+                    // Limit to the required number of doses
+                    if suitableEvents.count >= dosesPerDay {
+                        break
+                    }
+                }
+            }
+            
+            // If we couldn't find enough suitable times, create custom times
+            if suitableEvents.count < dosesPerDay {
+                let additionalEvents = createSeparatedEvents(for: medicine, 
+                                                             currentEvents: suitableEvents, 
+                                                             separationConstraints: separationConstraints, 
+                                                             neededCount: dosesPerDay - suitableEvents.count)
+                suitableEvents.append(contentsOf: additionalEvents)
+            }
+        } else {
+            // No separation constraints, all candidates are suitable
+            suitableEvents = Array(candidateEvents.prefix(dosesPerDay))
+        }
+        
+        return suitableEvents
+    }
+    
+    // Check if a potential event time has proper separation from other scheduled medicines
+    private func checkTimeSeparation(event: DailyEvent, fromMedicine medicineName: String, minutes: Int) -> Bool {
+        let eventTimeComponents = event.time.split(separator: ":").map { Int($0) ?? 0 }
+        let eventTimeMinutes = eventTimeComponents[0] * 60 + eventTimeComponents[1]
+        
+        for (otherTime, medicinesAtTime) in scheduledMedicinesByTime {
+            if medicinesAtTime.contains(where: { $0.name == medicineName }) {
+                let otherTimeComponents = otherTime.split(separator: ":").map { Int($0) ?? 0 }
+                let otherTimeMinutes = otherTimeComponents[0] * 60 + otherTimeComponents[1]
+                
+                let timeDifference = abs(eventTimeMinutes - otherTimeMinutes)
+                if timeDifference < minutes {
+                    return false
+                }
+            }
+        }
+        
+        return true
+    }
+    
+    // Generate candidate events for a medicine based on its general requirements
+    private func findCandidateEvents(for medicine: Medicine, dosesPerDay: Int) -> [DailyEvent] {
+        var candidates: [DailyEvent] = []
         
         // Check for specific timing rules
         let hasSpecificTiming = medicine.timingRules.contains { rule in
@@ -399,12 +481,11 @@ class MedicineScheduler {
             return false
         }
         
-        // First gather all possible candidate events
         if hasSpecificTiming {
             // Handle medicines with specific timing requirements
             for event in dailyEvents {
                 if medicine.canBeTakenAt(dailyEvent: event, takenMedicines: []) {
-                    candidateEvents.append(event)
+                    candidates.append(event)
                 }
             }
         } else {
@@ -414,25 +495,25 @@ class MedicineScheduler {
             if dosesPerDay == 1 {
                 // If once per day, prefer breakfast unless there are specific rules
                 if let breakfast = mealEvents.first(where: { $0.name == "Breakfast" }) {
-                    candidateEvents.append(breakfast)
+                    candidates.append(breakfast)
                 } else if let firstMeal = mealEvents.first {
-                    candidateEvents.append(firstMeal)
+                    candidates.append(firstMeal)
                 }
             } else if dosesPerDay == 2 {
                 // If twice per day, try to space them out (breakfast and dinner)
                 if let breakfast = mealEvents.first(where: { $0.name == "Breakfast" }),
                    let dinner = mealEvents.first(where: { $0.name == "Dinner" }) {
-                    candidateEvents.append(breakfast)
-                    candidateEvents.append(dinner)
+                    candidates.append(breakfast)
+                    candidates.append(dinner)
                 } else if mealEvents.count >= 2 {
-                    candidateEvents.append(mealEvents.first!)
-                    candidateEvents.append(mealEvents.last!)
+                    candidates.append(mealEvents.first!)
+                    candidates.append(mealEvents.last!)
                 }
             } else if dosesPerDay == 3 {
                 // If three times per day, try to use all meals
                 for meal in mealEvents {
-                    candidateEvents.append(meal)
-                    if candidateEvents.count >= dosesPerDay {
+                    candidates.append(meal)
+                    if candidates.count >= dosesPerDay {
                         break
                     }
                 }
@@ -440,7 +521,7 @@ class MedicineScheduler {
         }
         
         // Create special medicine events if needed (e.g., for empty stomach)
-        if candidateEvents.isEmpty && medicine.timingRules.contains(.emptyStomach) {
+        if candidates.isEmpty && medicine.timingRules.contains(.emptyStomach) {
             // For empty stomach medicines, schedule 30 minutes before breakfast
             if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }) {
                 // Create a new event 30 minutes before breakfast
@@ -464,139 +545,123 @@ class MedicineScheduler {
                     timeSinceLastMeal: 480 // Assuming 8 hours since dinner
                 )
                 
-                candidateEvents.append(emptyStomachEvent)
+                candidates.append(emptyStomachEvent)
             }
         }
         
-        // Now filter candidate events based on separation constraints
-        let separationConstraints = medicine.timingRules.compactMap { rule -> (String, Int)? in
-            if case .separationFromMedicine(let medicineName, let minutes) = rule {
-                return (medicineName, minutes)
-            }
-            return nil
-        }
+        return candidates
+    }
+    
+    // Create custom events that satisfy separation constraints
+    private func createSeparatedEvents(for medicine: Medicine, 
+                                       currentEvents: [DailyEvent], 
+                                       separationConstraints: [(String, Int)], 
+                                       neededCount: Int) -> [DailyEvent] {
+        var additionalEvents: [DailyEvent] = []
         
-        if !separationConstraints.isEmpty {
-            // For each candidate event, check if it conflicts with already scheduled medicines
-            for event in candidateEvents {
-                var isValid = true
-                
-                for (medicineName, separationMinutes) in separationConstraints {
-                    // Check if the medicine to be separated from is scheduled at this time
-                    if let medicinesAtThisTime = scheduledMedicinesByTime[event.time], 
-                       medicinesAtThisTime.contains(where: { $0.name == medicineName }) {
-                        isValid = false
-                        break
-                    }
-                    
-                    // Check nearby times for separation constraints
-                    let eventTimeComponents = event.time.split(separator: ":").map { Int($0) ?? 0 }
-                    let eventTimeMinutes = eventTimeComponents[0] * 60 + eventTimeComponents[1]
-                    
-                    for (otherTime, medicinesAtTime) in scheduledMedicinesByTime {
-                        if medicinesAtTime.contains(where: { $0.name == medicineName }) {
-                            let otherTimeComponents = otherTime.split(separator: ":").map { Int($0) ?? 0 }
-                            let otherTimeMinutes = otherTimeComponents[0] * 60 + otherTimeComponents[1]
-                            
-                            let timeDifference = abs(eventTimeMinutes - otherTimeMinutes)
-                            if timeDifference < separationMinutes {
-                                isValid = false
-                                break
-                            }
-                        }
-                    }
-                    
-                    if !isValid {
-                        break
-                    }
-                }
-                
-                if isValid {
-                    suitableEvents.append(event)
-                    
-                    // Limit to the required number of doses
-                    if suitableEvents.count >= dosesPerDay {
-                        break
-                    }
-                }
-            }
-        } else {
-            // No separation constraints, all candidates are suitable
-            suitableEvents = Array(candidateEvents.prefix(dosesPerDay))
-        }
+        // Find times when the other medicines are scheduled
+        var conflictingTimes: [String: String] = [:] // Maps time to medicine name
         
-        // If we couldn't find suitable events due to separation constraints but need to schedule something
-        if suitableEvents.isEmpty && !candidateEvents.isEmpty {
-            // Create alternative times that satisfy the separation constraints
-            for constraint in separationConstraints {
-                let medicineName = constraint.0
-                let separationMinutes = constraint.1
-                
-                // Find times when the other medicine is scheduled
-                var medicineScheduledTimes: [String] = []
-                for (time, medicines) in scheduledMedicinesByTime {
-                    if medicines.contains(where: { $0.name == medicineName }) {
-                        medicineScheduledTimes.append(time)
-                    }
-                }
-                
-                // Create events at least separationMinutes away from those times
-                for scheduledTime in medicineScheduledTimes {
-                    let timeComponents = scheduledTime.split(separator: ":").map { Int($0) ?? 0 }
-                    let scheduledMinutes = timeComponents[0] * 60 + timeComponents[1]
-                    
-                    // Try to schedule after separation time
-                    let afterMinutes = scheduledMinutes + separationMinutes
-                    var afterHour = afterMinutes / 60
-                    let afterMin = afterMinutes % 60
-                    
-                    // Ensure we're within a day
-                    if afterHour >= 24 {
-                        afterHour -= 24
-                    }
-                    
-                    let afterTimeString = String(format: "%02d:%02d", afterHour, afterMin)
-                    
-                    // Create a new event
-                    let afterEvent = DailyEvent(
-                        name: "After \(medicineName)",
-                        type: .medicineTime,
-                        time: afterTimeString
-                    )
-                    
-                    // Check if there's already something scheduled at this time
-                    if scheduledMedicinesByTime[afterTimeString] == nil {
-                        suitableEvents.append(afterEvent)
-                        
-                        if suitableEvents.count >= dosesPerDay {
-                            break
-                        }
-                    }
-                }
-                
-                if suitableEvents.count >= dosesPerDay {
-                    break
+        for (medicineName, _) in separationConstraints {
+            for (time, medicinesAtTime) in scheduledMedicinesByTime {
+                if medicinesAtTime.contains(where: { $0.name == medicineName }) {
+                    conflictingTimes[time] = medicineName
                 }
             }
         }
         
-        // If still no suitable events, just use the original candidates
-        // This could happen if there are conflicting constraints
-        if suitableEvents.isEmpty {
-            suitableEvents = Array(candidateEvents.prefix(dosesPerDay))
+        // Create events at different times of day, ensuring separation
+        if neededCount > 0 {
+            // Try to find a time slot in the morning (around 10:00)
+            let morningTime = findTimeSlot(around: "10:00", avoiding: conflictingTimes, separationConstraints: separationConstraints)
+            if let morningTime = morningTime, !currentEvents.contains(where: { $0.time == morningTime.time }) {
+                additionalEvents.append(morningTime)
+            }
+        }
+        
+        if additionalEvents.count < neededCount {
+            // Try to find a time slot in the afternoon (around 16:00)
+            let afternoonTime = findTimeSlot(around: "16:00", avoiding: conflictingTimes, separationConstraints: separationConstraints)
+            if let afternoonTime = afternoonTime, !currentEvents.contains(where: { $0.time == afternoonTime.time }) {
+                additionalEvents.append(afternoonTime)
+            }
+        }
+        
+        // Add more time slots if needed
+        if additionalEvents.count < neededCount {
+            // Try late evening (around 22:00)
+            let eveningTime = findTimeSlot(around: "22:00", avoiding: conflictingTimes, separationConstraints: separationConstraints)
+            if let eveningTime = eveningTime, !currentEvents.contains(where: { $0.time == eveningTime.time }) {
+                additionalEvents.append(eveningTime)
+            }
+        }
+        
+        return Array(additionalEvents.prefix(neededCount))
+    }
+    
+    // Find a suitable time slot around a given time
+    private func findTimeSlot(around baseTime: String, 
+                              avoiding conflictingTimes: [String: String], 
+                              separationConstraints: [(String, Int)]) -> DailyEvent? {
+        // Parse the base time
+        let components = baseTime.split(separator: ":").map { Int($0) ?? 0 }
+        let baseHour = components[0]
+        let baseMinute = components[0]
+        let baseMinutes = baseHour * 60 + baseMinute
+        
+        // Check the exact time first
+        let exactTimeString = String(format: "%02d:%02d", baseHour, baseMinute)
+        if !conflictingTimes.keys.contains(exactTimeString) && 
+           checkAllSeparations(time: exactTimeString, constraints: separationConstraints) {
+            return DailyEvent(name: "Medicine Time", type: .medicineTime, time: exactTimeString)
+        }
+        
+        // Try offsets around the base time
+        for offsetMinutes in [30, -30, 60, -60, 90, -90] {
+            let adjustedMinutes = baseMinutes + offsetMinutes
+            var hour = adjustedMinutes / 60
+            let minute = adjustedMinutes % 60
             
-            // If we need to take this medicine twice a day but have conflicts,
-            // create a custom schedule for medicines with separation constraints
-            if dosesPerDay > 1 && !separationConstraints.isEmpty {
-                // Try to create a morning and evening dose with enough separation
-                if let breakfastEvent = dailyEvents.first(where: { $0.name == "Breakfast" }),
-                   let dinnerEvent = dailyEvents.first(where: { $0.name == "Dinner" }) {
-                    suitableEvents = [breakfastEvent, dinnerEvent]
+            // Ensure we're within a day
+            if hour < 0 {
+                hour += 24
+            } else if hour >= 24 {
+                hour -= 24
+            }
+            
+            let timeString = String(format: "%02d:%02d", hour, minute)
+            
+            // Check if this time is viable
+            if !conflictingTimes.keys.contains(timeString) && 
+               checkAllSeparations(time: timeString, constraints: separationConstraints) {
+                return DailyEvent(name: "Medicine Time", type: .medicineTime, time: timeString)
+            }
+        }
+        
+        return nil
+    }
+    
+    // Check that a time satisfies all separation constraints
+    private func checkAllSeparations(time: String, constraints: [(String, Int)]) -> Bool {
+        let timeComponents = time.split(separator: ":").map { Int($0) ?? 0 }
+        let timeMinutes = timeComponents[0] * 60 + timeComponents[1]
+        
+        // Check each constraint
+        for (medicineName, requiredMinutes) in constraints {
+            for (otherTime, medicinesAtTime) in scheduledMedicinesByTime {
+                if medicinesAtTime.contains(where: { $0.name == medicineName }) {
+                    let otherComponents = otherTime.split(separator: ":").map { Int($0) ?? 0 }
+                    let otherMinutes = otherComponents[0] * 60 + otherComponents[1]
+                    
+                    let timeDifference = abs(timeMinutes - otherMinutes)
+                    if timeDifference < requiredMinutes {
+                        return false
+                    }
                 }
             }
         }
         
-        return suitableEvents
+        return true
     }
     
     private func determineQuantity(for medicine: Medicine) -> String {
@@ -632,13 +697,75 @@ class MedicineScheduler {
         
         return relevantNotes.joined(separator: "; ")
     }
+    
+    // Special handling for the Nifelat/Utrogestan conflict
+    private func fixNifelatUtrogestanConflict(_ scheduledDoses: inout [ScheduledDose]) {
+        // Group doses by time
+        var dosesByTime: [String: [ScheduledDose]] = [:]
+        for dose in scheduledDoses {
+            if dosesByTime[dose.event.time] == nil {
+                dosesByTime[dose.event.time] = []
+            }
+            dosesByTime[dose.event.time]?.append(dose)
+        }
+        
+        // Check each time slot for conflicts
+        for (time, doses) in dosesByTime {
+            let hasUtrogestan = doses.contains { $0.medicine.name == "Utrogestan 200mg" }
+            let hasNifelat = doses.contains { $0.medicine.name == "Nifelat" }
+            
+            // If both are scheduled at the same time, we need to move Nifelat
+            if hasUtrogestan && hasNifelat {
+                print("DEBUG: Found conflict between Nifelat and Utrogestan at \(time)")
+                
+                // Remove Nifelat from this time slot
+                scheduledDoses.removeAll { dose in
+                    return dose.event.time == time && dose.medicine.name == "Nifelat"
+                }
+                
+                // Create a new time 2 hours later for Nifelat
+                let timeComponents = time.split(separator: ":").map { Int($0) ?? 0 }
+                var newHour = timeComponents[0] + 2
+                let newMinute = timeComponents[1]
+                
+                if newHour >= 24 {
+                    newHour -= 24
+                }
+                
+                let newTime = String(format: "%02d:%02d", newHour, newMinute)
+                
+                // Find the Nifelat medicine
+                if let nifelatMedicine = medicines.first(where: { $0.name == "Nifelat" }) {
+                    // Create a new event
+                    let newEvent = DailyEvent(
+                        name: "After Utrogestan (2h separation)",
+                        type: .medicineTime,
+                        time: newTime
+                    )
+                    
+                    // Create a new dose
+                    let newDose = ScheduledDose(
+                        medicine: nifelatMedicine,
+                        event: newEvent,
+                        quantity: "1 dose",
+                        notes: "Must be taken at least 1-2 hours apart from Utrogestan"
+                    )
+                    
+                    // Add the new dose to the schedule
+                    scheduledDoses.append(newDose)
+                    print("DEBUG: Moved Nifelat to \(newTime) to avoid conflict with Utrogestan")
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Main Program
 
 // Define paths
 let currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-let filePath = currentDirectoryURL.appendingPathComponent("listaLekova.md").path
+// Adjust to find the file in the terapija subdirectory
+let filePath = currentDirectoryURL.appendingPathComponent("terapija/listaLekova.md").path
 
 print("Medicine Schedule Generator")
 print("==========================")
