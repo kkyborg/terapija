@@ -50,6 +50,10 @@ struct Medicine {
             case .custom(_):
                 // Custom rules would need special handling
                 continue
+            case .togetherWithMedicine(let medicineName):
+                if dailyEvent.name.lowercased() != medicineName.lowercased() {
+                    return false
+                }
             }
         }
         return true
@@ -64,6 +68,7 @@ enum TimingRule: Equatable {
     case specificTime(String) // e.g., "08:00", "20:00"
     case timesPerDay(Int)    // e.g., 2 times per day
     case separationFromMedicine(medicineName: String, minutes: Int)
+    case togetherWithMedicine(medicineName: String) // e.g., "together with Heferal"
     case custom(description: String)
     
     // Swift can automatically synthesize Equatable for enums with associated values
@@ -83,6 +88,8 @@ enum TimingRule: Equatable {
         case (.separationFromMedicine(let lhsMedicine, let lhsMinutes), 
               .separationFromMedicine(let rhsMedicine, let rhsMinutes)):
             return lhsMedicine == rhsMedicine && lhsMinutes == rhsMinutes
+        case (.togetherWithMedicine(let lhsMedicine), .togetherWithMedicine(let rhsMedicine)):
+            return lhsMedicine == rhsMedicine
         case (.custom(let lhsDesc), .custom(let rhsDesc)):
             return lhsDesc == rhsDesc
         default:
@@ -268,6 +275,32 @@ class MedicineParser {
            instructions.contains("before any other medicines") {
             rules.append(.custom(description: "Take before any other medicines"))
             notes.append("Must be taken before any other medicines")
+        }
+        
+        // Parse "together with" instructions
+        if instructions.contains("together with") {
+            if instructions.contains("together with Heferal") {
+                rules.append(.togetherWithMedicine(medicineName: "Heferal"))
+                notes.append("Take together with Heferal")
+            } else if instructions.contains("together with C vitamin") || instructions.contains("with C vitamin") {
+                rules.append(.togetherWithMedicine(medicineName: "Vitamin C"))
+                notes.append("Take together with Vitamin C")
+            }
+            
+            // Generic pattern match for "together with" instructions
+            let pattern = "together with ([\\w\\s]+)"
+            if let range = instructions.range(of: pattern, options: .regularExpression) {
+                let matchedText = String(instructions[range])
+                let components = matchedText.components(separatedBy: "together with ")
+                if components.count > 1 {
+                    let medicineName = components[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                    // Skip if we've already handled specific cases
+                    if medicineName != "Heferal" && medicineName != "C vitamin" && !medicineName.contains("vitamin") {
+                        rules.append(.togetherWithMedicine(medicineName: medicineName))
+                        notes.append("Take together with \(medicineName)")
+                    }
+                }
+            }
         }
         
         // Parse separation from other medicines - improved to catch more patterns
@@ -836,6 +869,34 @@ class MedicineScheduler {
             return candidates
         }
         
+        // Special case for Vitamin C - always schedule together with Heferal
+        if medicine.name == "Vitamin C" {
+            // Find the Heferal medicine events first
+            let hefevalEvents = scheduledDoses
+                .filter { $0.medicine.name == "Heferal" }
+                .map { $0.event }
+                .sorted { $0.time < $1.time }
+            
+            if !hefevalEvents.isEmpty {
+                // If Heferal is already scheduled, use the same events
+                candidates.append(contentsOf: hefevalEvents)
+                return candidates
+            } else {
+                // If Heferal isn't scheduled yet, find where it would be scheduled
+                if let heferal = medicines.first(where: { $0.name == "Heferal" }) {
+                    let hefevalDosesPerDay = heferal.timingRules.compactMap { rule -> Int? in
+                        if case .timesPerDay(let count) = rule {
+                            return count
+                        }
+                        return nil
+                    }.first ?? 1 // Default to once per day if not specified
+                    
+                    candidates = findCandidateEvents(for: heferal, dosesPerDay: hefevalDosesPerDay)
+                    return candidates
+                }
+            }
+        }
+        
         // Check for specific timing rules
         let hasSpecificTiming = medicine.timingRules.contains { rule in
             if case .specificMeal(_) = rule { return true }
@@ -1116,12 +1177,17 @@ class MedicineScheduler {
                 relevantNotes.append("Take with vitamin C or citrus")
             }
             
+            // Add special note about Vitamin C
+            relevantNotes.append("Take together with Vitamin C")
+            
             // Add empty stomach note
             if event.name.contains("Before Breakfast") {
                 relevantNotes.append("Take 1 hour before breakfast on empty stomach")
             } else if event.name.contains("After Dinner") {
                 relevantNotes.append("Take 2 hours after dinner on empty stomach")
             }
+        } else if medicine.name == "Vitamin C" {
+            relevantNotes.append("Take together with Heferal")
         } else if medicine.name == "Utrogestan 200mg" && event.name.contains("Before Sleep") {
             relevantNotes.append("Take 30 minutes before sleep for better sleep quality")
         } else if medicine.name == "Utrogestan 200mg" && event.name.contains("After Breakfast") {
