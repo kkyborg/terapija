@@ -629,8 +629,24 @@ class MedicineScheduler {
             if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }),
                let sleepEvent = dailyEvents.first(where: { $0.type == .sleep }) {
                 
-                // Always include breakfast time for the first dose
-                candidates.append(breakfast)
+                // Calculate time 2 hours after breakfast for first dose
+                let breakfastComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
+                var afterBreakfastHour = breakfastComponents[0] + 2
+                let afterBreakfastMinute = breakfastComponents[1]
+                
+                if afterBreakfastHour >= 24 {
+                    afterBreakfastHour -= 24
+                }
+                
+                let afterBreakfastTime = String(format: "%02d:%02d", afterBreakfastHour, afterBreakfastMinute)
+                let afterBreakfastEvent = DailyEvent(
+                    name: "After Breakfast (for Utrogestan)",
+                    type: .medicineTime,
+                    time: afterBreakfastTime
+                )
+                
+                // Add first dose 2 hours after breakfast instead of with breakfast
+                candidates.append(afterBreakfastEvent)
                 
                 // For the last dose, use 30 minutes before sleep
                 let sleepComponents = sleepEvent.time.split(separator: ":").map { Int($0) ?? 0 }
@@ -654,17 +670,71 @@ class MedicineScheduler {
                 
                 candidates.append(beforeSleepEvent)
                 
-                // If 3 doses per day, add a midday dose
+                // If 3 doses per day, add a midday dose exactly in the middle
                 if dosesPerDay == 3 {
-                    if let lunch = dailyEvents.first(where: { $0.name == "Lunch" }) {
-                        candidates.append(lunch)
-                    }
+                    // Calculate first dose time in minutes since midnight
+                    let firstDoseComponents = afterBreakfastTime.split(separator: ":").map { Int($0) ?? 0 }
+                    let firstDoseMinutes = firstDoseComponents[0] * 60 + firstDoseComponents[1]
+                    
+                    // Calculate last dose time in minutes since midnight
+                    let lastDoseMinutes = beforeSleepHour * 60 + beforeSleepMinute
+                    
+                    // Calculate the middle point, handling cases where last dose is before first dose (crosses midnight)
+                    let totalMinutes = lastDoseMinutes > firstDoseMinutes ? 
+                        lastDoseMinutes - firstDoseMinutes : (24 * 60 - firstDoseMinutes) + lastDoseMinutes
+                    
+                    // Calculate the middle dose time to be exactly halfway between first and last doses
+                    let middleDoseMinutes = (firstDoseMinutes + totalMinutes / 2) % (24 * 60)
+                    
+                    let middleDoseHour = middleDoseMinutes / 60
+                    let middleDoseMinute = middleDoseMinutes % 60
+                    
+                    let middleDoseTime = String(format: "%02d:%02d", middleDoseHour, middleDoseMinute)
+                    let middleDoseEvent = DailyEvent(
+                        name: "Middle Dose (for Utrogestan)",
+                        type: .medicineTime,
+                        time: middleDoseTime
+                    )
+                    
+                    candidates.append(middleDoseEvent)
                 }
                 
                 // Sort by time to ensure proper sequencing
                 candidates.sort { $0.time < $1.time }
                 
                 return candidates
+            }
+        }
+        
+        // Special case for Nifelat - take with breakfast
+        if medicine.name == "Nifelat" {
+            if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }) {
+                if dosesPerDay == 1 {
+                    // If just one dose, take with breakfast
+                    candidates.append(breakfast)
+                    return candidates
+                } else if dosesPerDay == 2 {
+                    // First dose with breakfast
+                    candidates.append(breakfast)
+                    
+                    // Second dose in afternoon (6-8 hours later)
+                    let breakfastComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
+                    let breakfastMinutes = breakfastComponents[0] * 60 + breakfastComponents[1]
+                    let secondDoseMinutes = breakfastMinutes + 420 // 7 hours after breakfast (middle of 6-8 hr range)
+                    let secondDoseHour = (secondDoseMinutes / 60) % 24
+                    let secondDoseMinute = secondDoseMinutes % 60
+                    
+                    let secondDoseTime = String(format: "%02d:%02d", secondDoseHour, secondDoseMinute)
+                    let secondDoseEvent = DailyEvent(
+                        name: "Afternoon Dose (for Nifelat)",
+                        type: .medicineTime,
+                        time: secondDoseTime
+                    )
+                    
+                    candidates.append(secondDoseEvent)
+                    candidates.sort { $0.time < $1.time }
+                    return candidates
+                }
             }
         }
         
@@ -1054,6 +1124,12 @@ class MedicineScheduler {
             }
         } else if medicine.name == "Utrogestan 200mg" && event.name.contains("Before Sleep") {
             relevantNotes.append("Take 30 minutes before sleep for better sleep quality")
+        } else if medicine.name == "Utrogestan 200mg" && event.name.contains("After Breakfast") {
+            relevantNotes.append("Take 2 hours after breakfast")
+        } else if medicine.name == "Utrogestan 200mg" && event.name.contains("Middle Dose") {
+            relevantNotes.append("Middle dose - evenly spaced between morning and evening doses")
+        } else if medicine.name == "Nifelat" && event.name == "Breakfast" {
+            relevantNotes.append("Take with breakfast, before the first Utrogestan dose")
         }
         
         return relevantNotes.joined(separator: "; ")
@@ -1074,9 +1150,11 @@ class MedicineScheduler {
         for (time, doses) in dosesByTime {
             let hasUtrogestan = doses.contains { $0.medicine.name == "Utrogestan 200mg" }
             let hasNifelat = doses.contains { $0.medicine.name == "Nifelat" }
+            let isBreakfastTime = doses.contains { $0.event.name == "Breakfast" }
             
             // If both are scheduled at the same time, we need to move Nifelat
-            if hasUtrogestan && hasNifelat {
+            // BUT, we intentionally keep Nifelat at breakfast time, since Utrogestan first dose is now 2 hours later
+            if hasUtrogestan && hasNifelat && !isBreakfastTime {
                 print("DEBUG: Found conflict between Nifelat and Utrogestan at \(time)")
                 
                 // Remove Nifelat from this time slot in the final list
