@@ -5,7 +5,7 @@
 - Pronison 5mg: 1x per day (recommended after breakfast)
 - Utrogestan 200mg: 3x per day
 - Nifelat: 2x (must be taken at least 1-2h apart from Utrogestan)
-- Prenatal Esential - vitamins complex including folic acid: 1x per day
+- Prenatal Esential: 1x per day
 - Heferal: 2x per day (on empty stomach but with C vitamin or citruses, but NOT with milk NOR calcium)
 - Vitamin C: 2x per day (together with Heferal)
 - Glukophage 1000xr: 1x per day, with the dinner

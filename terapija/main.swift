@@ -140,15 +140,23 @@ struct DailySchedule {
                 timelineByTime[event.time] = []
             }
             
-            // Format the event entry
+            // Format the event entry with specific meal emojis
             var eventDetails = ""
             switch event.type {
             case .wakeUp:
-                eventDetails = "Start of day"
+                eventDetails = "" // Remove "Start of day" text for wake up
             case .meal:
-                eventDetails = "Meal time"
+                if event.name.lowercased() == "breakfast" {
+                    eventDetails = "🥑"
+                } else if event.name.lowercased() == "lunch" {
+                    eventDetails = "🍗"
+                } else if event.name.lowercased() == "dinner" {
+                    eventDetails = "🍝"
+                } else {
+                    eventDetails = ""
+                }
             case .sleep:
-                eventDetails = "End of day"
+                eventDetails = "" // Remove "End of day" text for sleep
             case .medicineTime:
                 eventDetails = "Medicine time"
             }
@@ -163,8 +171,25 @@ struct DailySchedule {
             }
             
             // Format the dose entry
-            let doseDetails = dose.notes.isEmpty ? dose.quantity : "\(dose.quantity) - \(dose.notes)"
-            timelineByTime[dose.event.time]?.append((isEvent: false, name: dose.medicine.name, details: doseDetails))
+            var medicineName = dose.medicine.name
+            
+            // Remove "200mg" from Utrogestan display name
+            if medicineName.contains("Utrogestan") {
+                medicineName = "UTROGESTAN"
+            } else {
+                medicineName = medicineName.uppercased()
+            }
+            
+            // Simplify dose numbers (remove "dose" text)
+            var doseDetails = dose.notes.isEmpty ? dose.quantity : "\(dose.quantity) - \(dose.notes)"
+            if doseDetails.contains("dose") && doseDetails.contains("of") {
+                doseDetails = doseDetails.replacingOccurrences(of: "dose ", with: "")
+            }
+            
+            // Also clean up "Middle dose" to just "Middle"
+            doseDetails = doseDetails.replacingOccurrences(of: "Middle dose", with: "Middle")
+            
+            timelineByTime[dose.event.time]?.append((isEvent: false, name: medicineName, details: doseDetails))
         }
         
         // Sort times and print timeline
@@ -178,8 +203,26 @@ struct DailySchedule {
             
             for entry in sortedEntries {
                 if entry.isEvent {
-                    print("  📅 \(entry.name) - \(entry.details)")
+                    if entry.name == "Wake Up" {
+                        print("  ☀️  \(entry.name)")
+                    } else if entry.name == "Sleep" {
+                        print("  🛏️  \(entry.name)")
+                    } else if entry.name == "Breakfast" {
+                        print("  🥑 \(entry.name)")
+                        print("")  // Add a newline after Breakfast
+                    } else if entry.name == "Lunch" {
+                        print("  🍗 \(entry.name)")
+                        print("")  // Add a newline after Lunch
+                    } else if entry.name == "Dinner" {
+                        print("  🍝 \(entry.name)")
+                        print("")  // Add a newline after Dinner
+                    } else if !entry.details.isEmpty {
+                        print("  📅 \(entry.name)")
+                    } else {
+                        print("  📅 \(entry.name)")
+                    }
                 } else {
+                    // Use only uppercase for medicine names, without asterisks or emoji
                     print("  💊 \(entry.name): \(entry.details)")
                 }
             }
@@ -350,14 +393,10 @@ class MedicineParser {
         if instructions.contains("NOT with milk NOR calcium") {
             notes.append("Do not take with milk or calcium")
         }
-        if instructions.contains("with C vitamin or citruses") {
-            notes.append("Take with vitamin C or citrus")
-        }
         
         // Add any complex instructions as custom rules
         if instructions.contains("4 days = 50mg + 3 days = 75mg") {
             rules.append(.custom(description: "4 days 50mg + 3 days 75mg rotation"))
-            notes.append("Rotating schedule: 50mg for 4 days, then 75mg for 3 days")
         }
         
         return (rules, notes)
@@ -555,31 +594,54 @@ class MedicineScheduler {
         // Special case for Eutirox - must be taken 30-60 minutes before breakfast
         // AND before any other medicine
         if medicine.name == "Eutirox" {
-            if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }) {
+            if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }),
+               let wakeUp = dailyEvents.first(where: { $0.type == .wakeUp }) {
                 
-                // Create an event exactly 45 minutes before breakfast (midpoint of 30-60 minute range)
+                // Move Eutirox closer to wake-up time
+                // First calculate breakfast time in minutes
                 let breakfastComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
-                var breakfastHour = breakfastComponents[0]
-                var breakfastMinute = breakfastComponents[1] - 45
+                let breakfastMinutes = breakfastComponents[0] * 60 + breakfastComponents[1]
                 
-                if breakfastMinute < 0 {
-                    breakfastMinute += 60
-                    breakfastHour -= 1
-                    if breakfastHour < 0 {
-                        breakfastHour += 24
-                    }
+                // Calculate wake-up time in minutes
+                let wakeUpComponents = wakeUp.time.split(separator: ":").map { Int($0) ?? 0 }
+                let wakeUpMinutes = wakeUpComponents[0] * 60 + wakeUpComponents[1]
+                
+                // Schedule Eutirox just 30 minutes after wake-up
+                // But ensure it's still at least 30 minutes before breakfast
+                let eutiroxMinutes = wakeUpMinutes + 30
+                
+                // Make sure Eutirox is at least 30 minutes before breakfast
+                if (breakfastMinutes - eutiroxMinutes) < 30 {
+                    // Too close to breakfast, move it back to ensure 30 min separation
+                    let adjustedEutiroxMinutes = breakfastMinutes - 30
+                    let eutiroxHour = adjustedEutiroxMinutes / 60
+                    let eutiroxMinute = adjustedEutiroxMinutes % 60
+                    
+                    let timeString = String(format: "%02d:%02d", eutiroxHour, eutiroxMinute)
+                    let eutiroxEvent = DailyEvent(
+                        name: "First Medicine of Day (for Eutirox)",
+                        type: .medicineTime,
+                        time: timeString,
+                        timeSinceLastMeal: 480 // Assuming 8 hours since dinner
+                    )
+                    
+                    candidates.append(eutiroxEvent)
+                } else {
+                    // We have enough separation, use 30 minutes after wakeup
+                    let eutiroxHour = eutiroxMinutes / 60
+                    let eutiroxMinute = eutiroxMinutes % 60
+                    
+                    let timeString = String(format: "%02d:%02d", eutiroxHour, eutiroxMinute)
+                    let eutiroxEvent = DailyEvent(
+                        name: "First Medicine of Day (for Eutirox)",
+                        type: .medicineTime,
+                        time: timeString,
+                        timeSinceLastMeal: 480 // Assuming 8 hours since dinner
+                    )
+                    
+                    candidates.append(eutiroxEvent)
                 }
                 
-                // Use exactly 45 minutes before breakfast
-                let timeString = String(format: "%02d:%02d", breakfastHour, breakfastMinute)
-                let eutiroxEvent = DailyEvent(
-                    name: "First Medicine of Day (for Eutirox)",
-                    type: .medicineTime,
-                    time: timeString,
-                    timeSinceLastMeal: 480 // Assuming 8 hours since dinner
-                )
-                
-                candidates.append(eutiroxEvent)
                 return candidates
             }
         }
@@ -1170,17 +1232,14 @@ class MedicineScheduler {
                 relevantNotes.append("Take with food")
             }
         } else if medicine.name == "Eutirox" && event.name.contains("First Medicine") {
-            relevantNotes.append("MUST BE TAKEN FIRST! 30-60 minutes before breakfast and any other medicines on empty stomach")
+            relevantNotes.append("Rotating schedule: 50mg for 4 days, then 75mg for 3 days; MUST BE TAKEN FIRST! 30-60 minutes before breakfast and any other medicines on empty stomach")
         } else if medicine.name == "Heferal" {
-            // Always include the vitamin C note for Heferal
-            if !relevantNotes.contains("Take with vitamin C or citrus") {
-                relevantNotes.append("Take with vitamin C or citrus")
+            // Only add this note once - remove any duplicates from special notes
+            if !relevantNotes.contains("Do not take with milk or calcium") {
+                relevantNotes.append("Do not take with milk or calcium")
             }
-            
-            // Add special note about Vitamin C
             relevantNotes.append("Take together with Vitamin C")
             
-            // Add empty stomach note
             if event.name.contains("Before Breakfast") {
                 relevantNotes.append("Take 1 hour before breakfast on empty stomach")
             } else if event.name.contains("After Dinner") {
@@ -1198,7 +1257,15 @@ class MedicineScheduler {
             relevantNotes.append("Take with breakfast, before the first Utrogestan dose")
         }
         
-        return relevantNotes.joined(separator: "; ")
+        // Remove duplicate notes
+        var uniqueNotes: [String] = []
+        for note in relevantNotes {
+            if !uniqueNotes.contains(note) {
+                uniqueNotes.append(note)
+            }
+        }
+        
+        return uniqueNotes.joined(separator: "; ")
     }
     
     // Special handling for the Nifelat/Utrogestan conflict
@@ -1302,18 +1369,17 @@ let scheduler = MedicineScheduler(medicines: medicines)
 // Set daily events with default times
 // These could be customized based on user input
 scheduler.setDailyEvents(
-    wakeUpTime: "07:00",
-    breakfastTime: "09:00",
-    lunchTime: "14:00",
-    dinnerTime: "17:00",
-    sleepTime: "23:00"
+    wakeUpTime:     "07:00",
+    breakfastTime:  "09:00",
+    lunchTime:      "14:00",
+    dinnerTime:     "17:00",
+    sleepTime:      "23:00"
 )
 
 // Generate the daily schedule
 let schedule = scheduler.generateSchedule()
 
 // Print the schedule
-print("\nYour Daily Medicine Schedule:")
 schedule.printSchedule()
 
 
