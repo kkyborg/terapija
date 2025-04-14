@@ -505,6 +505,35 @@ class MedicineScheduler {
     private func findCandidateEvents(for medicine: Medicine, dosesPerDay: Int) -> [DailyEvent] {
         var candidates: [DailyEvent] = []
         
+        // Special case for Eutirox - must be taken 30-60 minutes before breakfast
+        if medicine.name == "Eutirox" {
+            if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }) {
+                // Create an event 45 minutes before breakfast (midpoint of 30-60 minute range)
+                let timeComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
+                var hour = timeComponents[0]
+                var minute = timeComponents[1] - 45
+                
+                if minute < 0 {
+                    minute += 60
+                    hour -= 1
+                    if hour < 0 {
+                        hour += 24
+                    }
+                }
+                
+                let timeString = String(format: "%02d:%02d", hour, minute)
+                let beforeBreakfastEvent = DailyEvent(
+                    name: "Before Breakfast (for Eutirox)",
+                    type: .medicineTime,
+                    time: timeString,
+                    timeSinceLastMeal: 480 // Assuming 8 hours since dinner
+                )
+                
+                candidates.append(beforeBreakfastEvent)
+                return candidates // Return immediately as this is a specific requirement
+            }
+        }
+        
         // Check for specific timing rules
         let hasSpecificTiming = medicine.timingRules.contains { rule in
             if case .specificMeal(_) = rule { return true }
@@ -552,7 +581,7 @@ class MedicineScheduler {
         }
         
         // Create special medicine events if needed (e.g., for empty stomach)
-        if candidates.isEmpty && medicine.timingRules.contains(.emptyStomach) {
+        if candidates.isEmpty && medicine.timingRules.contains(.emptyStomach) && medicine.name != "Eutirox" {
             // For empty stomach medicines, schedule 30 minutes before breakfast
             if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }) {
                 // Create a new event 30 minutes before breakfast
@@ -724,6 +753,8 @@ class MedicineScheduler {
             if medicine.timingRules.contains(.withFood) {
                 relevantNotes.append("Take with food")
             }
+        } else if medicine.name == "Eutirox" && event.name.contains("Before Breakfast") {
+            relevantNotes.append("Take 30-60 minutes before breakfast on empty stomach")
         }
         
         return relevantNotes.joined(separator: "; ")
@@ -813,9 +844,9 @@ let scheduler = MedicineScheduler(medicines: medicines)
 // These could be customized based on user input
 scheduler.setDailyEvents(
     wakeUpTime: "07:00",
-    breakfastTime: "08:00",
-    lunchTime: "13:00",
-    dinnerTime: "19:00",
+    breakfastTime: "09:00",
+    lunchTime: "14:00",
+    dinnerTime: "17:00",
     sleepTime: "23:00"
 )
 
