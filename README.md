@@ -8,12 +8,20 @@ A Swift command-line application that generates a daily schedule for taking medi
 - Parses medicine-specific rules and requirements
 - Takes into account daily events (wake up, meals, sleep)
 - Creates an optimized schedule that respects medicine-specific requirements
+- Visual formatting with emojis for different types of events:
+  - ☀️ Wake Up
+  - 🥑 Breakfast
+  - 🍗 Lunch
+  - 🍝 Dinner
+  - 🛏️ Sleep
+  - 💊 Medicines
 - Handles special cases like:
   - Medicines that need to be taken on an empty stomach (e.g., Eutirox, Heferal)
   - Medicines that must be taken with food
   - Medicines that need to be separated from other medicines (e.g., Nifelat and Utrogestan)
   - Medicines with specific timing or meal requirements
   - Specific dosage instructions and rotations
+  - Paired medications (e.g., Heferal and Vitamin C always scheduled together)
   - Optimally distributes multiple daily doses to maximize time between doses
   - Special handling for bedtime medications
 
@@ -54,6 +62,24 @@ The application uses a sophisticated scheduling algorithm that:
 4. Places nighttime medicines before sleep
 5. Schedules medicines with empty stomach requirements at appropriate times
 6. Adds detailed notes for each medicine to explain special requirements
+7. Ensures proper timing between related medications:
+   - Eutirox taken 30 minutes after waking up, but at least 30 minutes before breakfast
+   - Heferal taken exactly 1 hour before breakfast or 2 hours after dinner on empty stomach
+   - Vitamin C scheduled together with Heferal
+
+## Visual Formatting
+
+The schedule uses distinct visual formatting to enhance readability:
+
+- Medicine names are displayed in UPPERCASE for emphasis
+- Daily events use specific emojis for easy identification:
+  - ☀️ for wake up time
+  - 🥑 for breakfast
+  - 🍗 for lunch
+  - 🍝 for dinner
+  - 🛏️ for sleep time
+  - 💊 for all medicines
+- Blank lines after meal entries for improved visual separation
 
 ## Customization
 
