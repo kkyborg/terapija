@@ -927,8 +927,53 @@ class MedicineScheduler {
                         let middleDoseMinute = middleDoseMinutes % 60
                         
                         let middleDoseTime = String(format: "%02d:%02d", middleDoseHour, middleDoseMinute)
+                        
+                        // Check for potential conflict with Nifelat at dinner
+                        var dinnerTime = ""
+                        if let dinner = dailyEvents.first(where: { $0.name == "Dinner" }) {
+                            dinnerTime = dinner.time
+                        }
+                        
+                        let middleDoseEventName: String
+                        
+                        // If this middle dose is close to dinner and Nifelat is likely at dinner, adjust
+                        if !dinnerTime.isEmpty {
+                            let dinnerComponents = dinnerTime.split(separator: ":").map { Int($0) ?? 0 }
+                            let dinnerMinutes = dinnerComponents[0] * 60 + dinnerComponents[1]
+                            
+                            // Check if middle dose would be within 90 minutes after dinner
+                            let timeDiff = middleDoseMinutes >= dinnerMinutes ? 
+                                middleDoseMinutes - dinnerMinutes : 
+                                (24 * 60 - dinnerMinutes) + middleDoseMinutes
+                            
+                            if timeDiff < 90 {
+                                // Move middle dose to be at least 90 minutes after dinner
+                                let adjustedMiddleDoseMinutes = (dinnerMinutes + 90) % (24 * 60)
+                                let adjustedHour = adjustedMiddleDoseMinutes / 60
+                                let adjustedMinute = adjustedMiddleDoseMinutes % 60
+                                
+                                middleDoseEventName = middleDoses == 1 ? 
+                                    "Middle - evenly spaced between morning and evening doses" : 
+                                    "Dose \(i+1)"
+                                    
+                                let middleDoseTime = String(format: "%02d:%02d", adjustedHour, adjustedMinute)
+                                let middleDoseEvent = DailyEvent(
+                                    name: middleDoseEventName,
+                                    type: .medicineTime,
+                                    time: middleDoseTime
+                                )
+                                
+                                candidates.append(middleDoseEvent)
+                                continue
+                            }
+                        }
+                        
+                        middleDoseEventName = middleDoses == 1 ? 
+                            "Middle - evenly spaced between morning and evening doses" : 
+                            "Dose \(i+1) (for Utrogestan)"
+                        
                         let middleDoseEvent = DailyEvent(
-                            name: middleDoses == 1 ? "Middle Dose (for Utrogestan)" : "Dose \(i+1) (for Utrogestan)",
+                            name: middleDoseEventName,
                             type: .medicineTime,
                             time: middleDoseTime
                         )
@@ -1517,7 +1562,7 @@ class MedicineScheduler {
                 
                 // Find the required separation time from the rules
                 let nifelatMedicine = medicines.first(where: { $0.name == "Nifelat" })
-                var separationMinutes = 60 // Default to 1 hour if not specified
+                var separationMinutes = 90 // Default to 1.5 hours if not specified in rules
                 
                 if let nifelat = nifelatMedicine {
                     debugPrint("Looking for separation rules in Nifelat timing rules")
@@ -1583,7 +1628,7 @@ class MedicineScheduler {
                         medicine: utrogestanMedicine,
                         event: newEvent,
                         quantity: quantity,
-                        notes: "Moved \(separationTimeText) after dinner to maintain required separation from Nifelat dose 3"
+                        notes: "Moved to maintain required separation from Nifelat dose 3"
                     )
                     
                     // Add the new dose to both the final schedule and internal tracking
