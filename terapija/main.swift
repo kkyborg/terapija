@@ -1436,20 +1436,20 @@ class MedicineScheduler {
             relevantNotes.append("Take together with Vitamin C")
             
             if event.name.contains("Before Breakfast") {
-                relevantNotes.append("Take 1 hour before breakfast on empty stomach")
+                relevantNotes.append("1 hour before breakfast on empty stomach")
             } else if event.name.contains("After Dinner") {
-                relevantNotes.append("Take 2 hours after dinner on empty stomach")
+                relevantNotes.append("2 hours after dinner on empty stomach")
             }
         } else if medicine.name == "Vitamin C" {
-            relevantNotes.append("Take together with Heferal")
+            relevantNotes.append("together with Heferal")
         } else if medicine.name == "Utrogestan 200mg" && event.name.contains("Before Sleep") {
-            relevantNotes.append("Take 30 minutes before sleep for better sleep quality")
+            relevantNotes.append("")
         } else if medicine.name == "Utrogestan 200mg" && event.name.contains("After Breakfast") {
-            relevantNotes.append("Take 2 hours after breakfast")
+            relevantNotes.append("2 hours after breakfast")
         } else if medicine.name == "Utrogestan 200mg" && event.name.contains("Middle Dose") {
-            relevantNotes.append("Middle dose - evenly spaced between morning and evening doses")
+            relevantNotes.append("")
         } else if medicine.name == "Nifelat" && event.name == "Breakfast" {
-            relevantNotes.append("Take with breakfast, before the first Utrogestan dose")
+            relevantNotes.append("with breakfast, before the first Utrogestan dose")
         }
         
         // Remove duplicate notes
@@ -1489,8 +1489,8 @@ class MedicineScheduler {
                 nifelatDose3AtDinner = dosesAtDinner.contains { dose in
                     let isNifelatDose3 = dose.medicine.name == "Nifelat" && 
                            (dose.quantity.contains("dose 3 of") ||
-                           dose.notes.contains("Special rule: with the dinner") ||
-                           dose.notes.contains("Special rule: with dinner"))
+                           dose.notes.contains("⚠️: with the dinner") ||
+                           dose.notes.contains("⚠️: with dinner"))
                     if isNifelatDose3 {
                         debugPrint("Found Nifelat dose 3 at dinner")
                     }
@@ -1763,7 +1763,7 @@ class MedicineScheduler {
                     medicine: medicine,
                     event: eventFromException,
                     quantity: quantity,
-                    notes: "Special rule: \(exception.instruction)"
+                    notes: "⚠️: \(exception.instruction)"
                 )
                 scheduledDoses.append(newDose)
                 
@@ -1777,7 +1777,7 @@ class MedicineScheduler {
                     medicine: targetDose.medicine,
                     event: targetDose.event,
                     quantity: targetDose.quantity,
-                    notes: targetDose.notes + "; Special rule: \(exception.instruction)"
+                    notes: targetDose.notes + "; ⚠️: \(exception.instruction)"
                 )
                 scheduledDoses.append(newDose)
                 
