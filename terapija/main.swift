@@ -1481,10 +1481,10 @@ class MedicineScheduler {
         // Find dinner time and check if Nifelat dose 3 is there
         if let dinner = dailyEvents.first(where: { $0.name == "Dinner" }) {
             dinnerTime = dinner.time
-            print("DEBUG: Dinner time is \(dinnerTime)")
+            debugPrint("Dinner time is \(dinnerTime)")
             
             if let dosesAtDinner = dosesByTime[dinnerTime] {
-                print("DEBUG: Medicines at dinner: \(dosesAtDinner.map { $0.medicine.name }.joined(separator: ", "))")
+                debugPrint("Medicines at dinner: \(dosesAtDinner.map { $0.medicine.name }.joined(separator: ", "))")
                 
                 nifelatDose3AtDinner = dosesAtDinner.contains { dose in
                     let isNifelatDose3 = dose.medicine.name == "Nifelat" && 
@@ -1492,7 +1492,7 @@ class MedicineScheduler {
                            dose.notes.contains("Special rule: with the dinner") ||
                            dose.notes.contains("Special rule: with dinner"))
                     if isNifelatDose3 {
-                        print("DEBUG: Found Nifelat dose 3 at dinner")
+                        debugPrint("Found Nifelat dose 3 at dinner")
                     }
                     return isNifelatDose3
                 }
@@ -1507,26 +1507,26 @@ class MedicineScheduler {
             let isDinnerTime = time == dinnerTime
             
             if isDinnerTime {
-                print("DEBUG: Checking for conflicts at dinner time: hasUtrogestan=\(hasUtrogestan), hasNifelat=\(hasNifelat), nifelatDose3AtDinner=\(nifelatDose3AtDinner)")
+                debugPrint("Checking for conflicts at dinner time: hasUtrogestan=\(hasUtrogestan), hasNifelat=\(hasNifelat), nifelatDose3AtDinner=\(nifelatDose3AtDinner)")
             }
             
             // Special case: If this is dinner and Nifelat dose 3 is scheduled here by exception
             if isDinnerTime && nifelatDose3AtDinner && hasUtrogestan {
                 // Instead of moving Nifelat, move Utrogestan in this case
-                print("DEBUG: Found conflict at dinner - keeping Nifelat dose 3 with dinner and moving Utrogestan")
+                debugPrint("Found conflict at dinner - keeping Nifelat dose 3 with dinner and moving Utrogestan")
                 
                 // Find the required separation time from the rules
                 let nifelatMedicine = medicines.first(where: { $0.name == "Nifelat" })
                 var separationMinutes = 60 // Default to 1 hour if not specified
                 
                 if let nifelat = nifelatMedicine {
-                    print("DEBUG: Looking for separation rules in Nifelat timing rules")
+                    debugPrint("Looking for separation rules in Nifelat timing rules")
                     for rule in nifelat.timingRules {
-                        print("DEBUG: Examining rule: \(rule)")
+                        debugPrint("Examining rule: \(rule)")
                         if case .separationFromMedicine(let medicineName, let minutes) = rule, 
                            medicineName == "Utrogestan" || medicineName == "Utrogestan 200mg" {
                             separationMinutes = minutes
-                            print("DEBUG: Found separation rule: \(medicineName) - \(minutes) minutes")
+                            debugPrint("Found separation rule: \(medicineName) - \(minutes) minutes")
                             break
                         }
                     }
@@ -1590,12 +1590,12 @@ class MedicineScheduler {
                     scheduledDoses.append(newDose)
                     self.scheduledDoses.append(newDose)
                     
-                    print("DEBUG: Moved Utrogestan to \(newTime) to respect Nifelat dose 3 with dinner exception (\(separationTimeText) separation)")
+                    debugPrint("Moved Utrogestan to \(newTime) to respect Nifelat dose 3 with dinner exception (\(separationTimeText) separation)")
                 }
                 
             } else if hasUtrogestan && hasNifelat && !isBreakfastTime {
                 // Regular conflict handling - move Nifelat when it's not the special case
-                print("DEBUG: Found conflict between Nifelat and Utrogestan at \(time)")
+                debugPrint("Found conflict between Nifelat and Utrogestan at \(time)")
                 
                 // Remove Nifelat from this time slot in the final list
                 scheduledDoses.removeAll { dose in
@@ -1648,7 +1648,7 @@ class MedicineScheduler {
                     scheduledDoses.append(newDose)
                     self.scheduledDoses.append(newDose)
                     
-                    print("DEBUG: Moved Nifelat to \(newTime) to avoid conflict with Utrogestan")
+                    debugPrint("Moved Nifelat to \(newTime) to avoid conflict with Utrogestan")
                 }
             }
         }
@@ -1723,7 +1723,7 @@ class MedicineScheduler {
                 continue
             }
             
-            print("DEBUG: Processing exception for \(exception.medicineName) dose \(doseNumber): \(exception.instruction)")
+            debugPrint("Processing exception for \(exception.medicineName) dose \(doseNumber): \(exception.instruction)")
             
             // Get the specific dose we need to modify
             let targetDose = medicineDoses[doseNumber - 1] // doseNumber is 1-based
@@ -1743,7 +1743,7 @@ class MedicineScheduler {
                     }
                     
                     if nifelatAtDinner {
-                        print("DEBUG: Skipping Utrogestan at dinner exception - conflict with Nifelat")
+                        debugPrint("Skipping Utrogestan at dinner exception - conflict with Nifelat")
                         continue // Skip - this will be handled by fixNifelatUtrogestanConflict
                     }
                 }
@@ -1770,7 +1770,7 @@ class MedicineScheduler {
                 // Mark this dose as adjusted
                 adjustedDoses[exception.medicineName]?.insert(doseNumber)
                 
-                print("DEBUG: Rescheduled \(exception.medicineName) dose \(doseNumber) to \(eventFromException.time) based on exception")
+                debugPrint("Rescheduled \(exception.medicineName) dose \(doseNumber) to \(eventFromException.time) based on exception")
             } else {
                 // For exceptions we don't understand, just add the original dose back with a note
                 let newDose = ScheduledDose(
@@ -1784,7 +1784,7 @@ class MedicineScheduler {
                 // Mark this dose as adjusted
                 adjustedDoses[exception.medicineName]?.insert(doseNumber)
                 
-                print("DEBUG: Couldn't understand exception for \(exception.medicineName) dose \(doseNumber), keeping original time")
+                debugPrint("Couldn't understand exception for \(exception.medicineName) dose \(doseNumber), keeping original time")
             }
         }
         
@@ -1836,16 +1836,52 @@ class MedicineScheduler {
 
 // MARK: - Main Program
 
-// Define paths
+// Define paths and options
 let currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
 print("Current directory: \(FileManager.default.currentDirectoryPath)")
-// Adjust to find the file in the terapija subdirectory
-let filePath = currentDirectoryURL.appendingPathComponent("listaLekova.md").path
+
+// Parse command-line arguments
+var debugMode = false
+var inputFilePath: String?
+
+// Process all arguments
+for (index, arg) in CommandLine.arguments.enumerated() {
+    // Skip the first argument (program name)
+    if index == 0 { continue }
+    
+    // Check for debug flag
+    if arg == "-d" || arg == "--debug" {
+        debugMode = true
+    } 
+    // Consider non-flag arguments as the input file path
+    else if !arg.hasPrefix("-") && inputFilePath == nil {
+        inputFilePath = arg
+    }
+}
+
+// Determine file path based on arguments
+let filePath: String
+if let userFilePath = inputFilePath {
+    filePath = userFilePath
+    print("Using specified file: \(filePath)")
+} else {
+    // Use the default file path
+    filePath = currentDirectoryURL.appendingPathComponent("listaLekova.md").path
+    print("Using default file: \(filePath)")
+}
+
 print("Attempting to read file from: \(filePath)")
 
 print("Terapija - Medicine Schedule Generator")
 print("=====================================")
 print("Reading medicine list from: \(filePath)")
+
+// Helper function for debug printing
+func debugPrint(_ message: String) {
+    if debugMode {
+        print("DEBUG: \(message)")
+    }
+}
 
 // Parse medicine list from file
 let medicines = MedicineParser.parseMedicineList(from: filePath)
