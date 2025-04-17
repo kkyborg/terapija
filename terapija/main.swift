@@ -131,6 +131,28 @@ struct DailySchedule {
         print("Daily Medicine Schedule for \(formatDate(date))")
         print("------------------------------------------")
         
+        // Collect all exceptions first for display at the top
+        var exceptions: [String] = []
+        for dose in scheduledDoses {
+            for note in dose.medicine.specialNotes {
+                if note.hasPrefix("Exception:") {
+                    let formattedNote = "⚠️ \(note.replacingOccurrences(of: "Exception: ", with: ""))"
+                    if !exceptions.contains(formattedNote) {
+                        exceptions.append(formattedNote)
+                    }
+                }
+            }
+        }
+        
+        // Display exceptions at the top if there are any
+        if !exceptions.isEmpty {
+            print("⚠️ SPECIAL INSTRUCTIONS FOR TODAY ⚠️")
+            for exception in exceptions {
+                print(exception)
+            }
+            print("------------------------------------------")
+        }
+        
         // Create a combined timeline of events and doses
         var timelineByTime: [String: [(isEvent: Bool, name: String, details: String)]] = [:]
         
@@ -240,8 +262,18 @@ struct DailySchedule {
 // MARK: - Parsers
 
 class MedicineParser {
+    // Structure to hold parsed exceptions with dose specificity
+    struct MedicineException {
+        let medicineName: String
+        let doseNumber: Int?
+        let instruction: String
+        let rawText: String
+    }
+    
     static func parseMedicineList(from filePath: String) -> [Medicine] {
         var medicines: [Medicine] = []
+        var exceptions: [MedicineException] = [] // Store parsed exceptions
+        var currentSection = "RULES" // Default section
         
         do {
             let content = try String(contentsOfFile: filePath, encoding: .utf8)
@@ -250,10 +282,55 @@ class MedicineParser {
                 .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("//") } // Skip comments
             
             for line in lines {
-                if let medicine = parseMedicineLine(line) {
-                    medicines.append(medicine)
+                let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                
+                // Check for section headers
+                if trimmedLine.hasPrefix("# ") {
+                    currentSection = trimmedLine.dropFirst(2).trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                    continue
+                }
+                
+                // Process line based on current section
+                if currentSection == "RULES" {
+                    if let medicine = parseMedicineLine(line) {
+                        medicines.append(medicine)
+                    }
+                } else if currentSection == "EXCEPTIONS" {
+                    if let exception = parseExceptionLine(line) {
+                        exceptions.append(exception)
+                    }
                 }
             }
+            
+            // Now apply exceptions to the medicines
+            for i in 0..<medicines.count {
+                let medicineName = medicines[i].name
+                
+                // Find exceptions that apply to this medicine
+                let medicineExceptions = exceptions.filter { $0.medicineName == medicineName }
+                
+                if !medicineExceptions.isEmpty {
+                    var updatedNotes = medicines[i].specialNotes
+                    
+                    // Add exceptions as special notes
+                    for exception in medicineExceptions {
+                        let doseSpecificText = exception.doseNumber != nil ? 
+                            "Exception: For dose \(exception.doseNumber!), \(exception.instruction)" :
+                            "Exception: \(exception.instruction)"
+                        
+                        updatedNotes.append(doseSpecificText)
+                    }
+                    
+                    // Update the medicine with exceptions
+                    medicines[i] = Medicine(
+                        name: medicines[i].name,
+                        dosageInstructions: medicines[i].dosageInstructions,
+                        timingRules: medicines[i].timingRules,
+                        specialNotes: updatedNotes
+                    )
+                }
+            }
+            
         } catch {
             print("Error reading medicine list file: \(error)")
         }
@@ -282,6 +359,49 @@ class MedicineParser {
             dosageInstructions: instructionsText,
             timingRules: rules,
             specialNotes: notes
+        )
+    }
+    
+    private static func parseExceptionLine(_ line: String) -> MedicineException? {
+        // Exception format: "- MedicineName: instruction"
+        // or dose-specific format: "- MedicineName: dose N, instruction"
+        guard line.hasPrefix("-") else { return nil }
+        
+        // Remove the leading dash and trim whitespace
+        let exceptionText = line.dropFirst().trimmingCharacters(in: .whitespaces)
+        
+        // Split by colon to get name and instructions
+        guard let colonIndex = exceptionText.firstIndex(of: ":") else { return nil }
+        
+        let medicineName = String(exceptionText[..<colonIndex]).trimmingCharacters(in: .whitespaces)
+        let instructionText = String(exceptionText[exceptionText.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
+        
+        // Check if this is a dose-specific exception (e.g., "dose 3, with the dinner")
+        let dosePattern = "dose (\\d+),\\s*(.*)"
+        if let regex = try? NSRegularExpression(pattern: dosePattern, options: []),
+           let match = regex.firstMatch(in: instructionText, options: [], range: NSRange(instructionText.startIndex..., in: instructionText)) {
+            
+            if let numberRange = Range(match.range(at: 1), in: instructionText),
+               let instructionRange = Range(match.range(at: 2), in: instructionText) {
+                
+                let doseNumber = Int(String(instructionText[numberRange]))
+                let specificInstruction = String(instructionText[instructionRange]).trimmingCharacters(in: .whitespaces)
+                
+                return MedicineException(
+                    medicineName: medicineName,
+                    doseNumber: doseNumber,
+                    instruction: specificInstruction,
+                    rawText: line
+                )
+            }
+        }
+        
+        // Regular exception (applies to all doses)
+        return MedicineException(
+            medicineName: medicineName,
+            doseNumber: nil,
+            instruction: instructionText,
+            rawText: line
         )
     }
     
@@ -420,6 +540,7 @@ class MedicineScheduler {
     private var dailyEvents: [DailyEvent] = []
     private var scheduledMedicinesByTime: [String: [Medicine]] = [:]
     private var scheduledDoses: [ScheduledDose] = [] // Keep track of all scheduled doses
+    private var exceptions: [MedicineParser.MedicineException] = []
     
     init(medicines: [Medicine]) {
         self.medicines = medicines
@@ -443,6 +564,9 @@ class MedicineScheduler {
         scheduledMedicinesByTime = [:]
         scheduledDoses = [] // Reset tracked doses
         var eutiroxTime: String? = nil
+        
+        // Extract exceptions from medicine notes for later use
+        extractExceptions()
         
         // First, handle Eutirox separately since it must be taken before all other medicines
         if let eutirox = medicines.first(where: { $0.name == "Eutirox" }) {
@@ -510,6 +634,9 @@ class MedicineScheduler {
         
         // SPECIAL HANDLING: Detect and fix specific Nifelat/Utrogestan conflict
         fixNifelatUtrogestanConflict(&finalScheduledDoses)
+        
+        // Apply dose-specific exceptions
+        applyDoseSpecificExceptions(&finalScheduledDoses)
         
         // Restore original daily events
         dailyEvents = originalDailyEvents
@@ -1287,9 +1414,11 @@ class MedicineScheduler {
     private func getNotes(for medicine: Medicine, at event: DailyEvent) -> String {
         var relevantNotes: [String] = []
         
-        // Include special notes based on context
+        // Include special notes based on context, excluding exceptions
         for note in medicine.specialNotes {
-            relevantNotes.append(note)
+            if !note.hasPrefix("Exception:") {
+                relevantNotes.append(note)
+            }
         }
         
         // Additional contextual notes based on the event
@@ -1345,15 +1474,127 @@ class MedicineScheduler {
             dosesByTime[dose.event.time]?.append(dose)
         }
         
+        // Track if Nifelat dose 3 is at dinner (special case we want to preserve)
+        var nifelatDose3AtDinner = false
+        var dinnerTime = ""
+        
+        // Find dinner time and check if Nifelat dose 3 is there
+        if let dinner = dailyEvents.first(where: { $0.name == "Dinner" }) {
+            dinnerTime = dinner.time
+            print("DEBUG: Dinner time is \(dinnerTime)")
+            
+            if let dosesAtDinner = dosesByTime[dinnerTime] {
+                print("DEBUG: Medicines at dinner: \(dosesAtDinner.map { $0.medicine.name }.joined(separator: ", "))")
+                
+                nifelatDose3AtDinner = dosesAtDinner.contains { dose in
+                    let isNifelatDose3 = dose.medicine.name == "Nifelat" && 
+                           (dose.quantity.contains("dose 3 of") ||
+                           dose.notes.contains("Special rule: with the dinner") ||
+                           dose.notes.contains("Special rule: with dinner"))
+                    if isNifelatDose3 {
+                        print("DEBUG: Found Nifelat dose 3 at dinner")
+                    }
+                    return isNifelatDose3
+                }
+            }
+        }
+        
         // Check each time slot for conflicts
         for (time, doses) in dosesByTime {
             let hasUtrogestan = doses.contains { $0.medicine.name == "Utrogestan 200mg" }
             let hasNifelat = doses.contains { $0.medicine.name == "Nifelat" }
             let isBreakfastTime = doses.contains { $0.event.name == "Breakfast" }
+            let isDinnerTime = time == dinnerTime
             
-            // If both are scheduled at the same time, we need to move Nifelat
-            // BUT, we intentionally keep Nifelat at breakfast time, since Utrogestan first dose is now 2 hours later
-            if hasUtrogestan && hasNifelat && !isBreakfastTime {
+            if isDinnerTime {
+                print("DEBUG: Checking for conflicts at dinner time: hasUtrogestan=\(hasUtrogestan), hasNifelat=\(hasNifelat), nifelatDose3AtDinner=\(nifelatDose3AtDinner)")
+            }
+            
+            // Special case: If this is dinner and Nifelat dose 3 is scheduled here by exception
+            if isDinnerTime && nifelatDose3AtDinner && hasUtrogestan {
+                // Instead of moving Nifelat, move Utrogestan in this case
+                print("DEBUG: Found conflict at dinner - keeping Nifelat dose 3 with dinner and moving Utrogestan")
+                
+                // Find the required separation time from the rules
+                let nifelatMedicine = medicines.first(where: { $0.name == "Nifelat" })
+                var separationMinutes = 60 // Default to 1 hour if not specified
+                
+                if let nifelat = nifelatMedicine {
+                    print("DEBUG: Looking for separation rules in Nifelat timing rules")
+                    for rule in nifelat.timingRules {
+                        print("DEBUG: Examining rule: \(rule)")
+                        if case .separationFromMedicine(let medicineName, let minutes) = rule, 
+                           medicineName == "Utrogestan" || medicineName == "Utrogestan 200mg" {
+                            separationMinutes = minutes
+                            print("DEBUG: Found separation rule: \(medicineName) - \(minutes) minutes")
+                            break
+                        }
+                    }
+                }
+                
+                // Remove Utrogestan from this time slot in the final list
+                scheduledDoses.removeAll { dose in
+                    return dose.event.time == time && dose.medicine.name == "Utrogestan 200mg"
+                }
+                
+                // Also remove from our internal tracking
+                self.scheduledDoses.removeAll { dose in
+                    return dose.event.time == time && dose.medicine.name == "Utrogestan 200mg"
+                }
+                
+                // Create a new time using the required separation time after dinner for Utrogestan
+                let timeComponents = time.split(separator: ":").map { Int($0) ?? 0 }
+                var newHour = timeComponents[0]
+                var newMinute = timeComponents[1]
+                
+                // Add the required separation minutes
+                newMinute += separationMinutes
+                while newMinute >= 60 {
+                    newMinute -= 60
+                    newHour += 1
+                }
+                
+                if newHour >= 24 {
+                    newHour -= 24
+                }
+                
+                let newTime = String(format: "%02d:%02d", newHour, newMinute)
+                
+                // Find the Utrogestan medicine
+                if let utrogestanMedicine = medicines.first(where: { $0.name == "Utrogestan 200mg" }) {
+                    // Get the removed Utrogestan dose to preserve its quantity
+                    let utrogestanDose = doses.first { $0.medicine.name == "Utrogestan 200mg" }
+                    let quantity = utrogestanDose?.quantity ?? "1 dose"
+                    
+                    // Format separation time for display
+                    let separationTimeText = separationMinutes == 60 ? "1 hour" : 
+                                             separationMinutes < 60 ? "\(separationMinutes) minutes" :
+                                             "\(separationMinutes / 60) hours \(separationMinutes % 60) minutes"
+                    
+                    // Create a new event
+                    let newEvent = DailyEvent(
+                        name: "After Dinner (for Utrogestan)",
+                        type: .medicineTime,
+                        time: newTime
+                    )
+                    
+                    // Create a new dose
+                    let newDose = ScheduledDose(
+                        medicine: utrogestanMedicine,
+                        event: newEvent,
+                        quantity: quantity,
+                        notes: "Moved \(separationTimeText) after dinner to maintain required separation from Nifelat dose 3"
+                    )
+                    
+                    // Add the new dose to both the final schedule and internal tracking
+                    scheduledDoses.append(newDose)
+                    self.scheduledDoses.append(newDose)
+                    
+                    print("DEBUG: Moved Utrogestan to \(newTime) to respect Nifelat dose 3 with dinner exception (\(separationTimeText) separation)")
+                }
+                
+            } else if hasUtrogestan && hasNifelat && !isBreakfastTime {
+                // Regular conflict handling - move Nifelat when it's not the special case
                 print("DEBUG: Found conflict between Nifelat and Utrogestan at \(time)")
                 
                 // Remove Nifelat from this time slot in the final list
@@ -1412,17 +1653,198 @@ class MedicineScheduler {
             }
         }
     }
+    
+    // Extract exceptions from medicine notes
+    private func extractExceptions() {
+        exceptions = []
+        
+        for medicine in medicines {
+            for note in medicine.specialNotes {
+                if note.hasPrefix("Exception:") {
+                    let exceptionText = note.replacingOccurrences(of: "Exception: ", with: "")
+                    
+                    // Try to parse dose-specific exceptions
+                    var doseNumber: Int? = nil
+                    var instruction = exceptionText
+                    
+                    // Pattern to match "dose X," where X is a number
+                    let dosePattern = "dose (\\d+),"
+                    if let regex = try? NSRegularExpression(pattern: dosePattern, options: []),
+                       let match = regex.firstMatch(in: exceptionText, options: [], range: NSRange(exceptionText.startIndex..., in: exceptionText)) {
+                        
+                        if let numberRange = Range(match.range(at: 1), in: exceptionText) {
+                            doseNumber = Int(String(exceptionText[numberRange]))
+                            
+                            // Extract the instruction part after the dose specification
+                            if let commaRange = exceptionText.range(of: ",", options: [], range: exceptionText.startIndex..<exceptionText.endIndex, locale: nil) {
+                                instruction = String(exceptionText[exceptionText.index(after: commaRange.upperBound)...]).trimmingCharacters(in: .whitespaces)
+                            }
+                        }
+                    }
+                    
+                    let exception = MedicineParser.MedicineException(
+                        medicineName: medicine.name,
+                        doseNumber: doseNumber,
+                        instruction: instruction,
+                        rawText: exceptionText
+                    )
+                    
+                    exceptions.append(exception)
+                }
+            }
+        }
+    }
+    
+    // Apply dose-specific exceptions to the scheduled doses
+    private func applyDoseSpecificExceptions(_ scheduledDoses: inout [ScheduledDose]) {
+        // Create a dictionary to track which doses have already been adjusted
+        var adjustedDoses: [String: Set<Int>] = [:]
+        
+        // Process all exceptions - don't special case just Nifelat
+        for exception in exceptions {
+            // Skip exceptions without dose numbers (they're handled elsewhere)
+            guard let doseNumber = exception.doseNumber else { continue }
+            
+            // Find all doses for this medicine
+            let medicineDoses = scheduledDoses.filter { 
+                $0.medicine.name == exception.medicineName 
+            }.sorted { $0.event.time < $1.event.time }
+            
+            // Skip if we don't have enough doses
+            if medicineDoses.count < doseNumber { continue }
+            
+            // Track which doses of this medicine have been adjusted
+            if adjustedDoses[exception.medicineName] == nil {
+                adjustedDoses[exception.medicineName] = []
+            }
+            
+            // Skip if this specific dose has already been adjusted
+            if adjustedDoses[exception.medicineName]?.contains(doseNumber) == true {
+                continue
+            }
+            
+            print("DEBUG: Processing exception for \(exception.medicineName) dose \(doseNumber): \(exception.instruction)")
+            
+            // Get the specific dose we need to modify
+            let targetDose = medicineDoses[doseNumber - 1] // doseNumber is 1-based
+            
+            // Find the corresponding medicine
+            guard let medicine = medicines.first(where: { $0.name == exception.medicineName }) else { continue }
+            
+            // Special handling for Utrogestan at dinner when Nifelat is also there
+            if exception.medicineName == "Utrogestan 200mg" && 
+               (exception.instruction.contains("with dinner") || 
+                exception.instruction.contains("with the dinner")) {
+                // Check if Nifelat is also scheduled at dinner
+                if let dinner = dailyEvents.first(where: { $0.name == "Dinner" }) {
+                    let nifelatAtDinner = scheduledDoses.contains { dose in
+                        return dose.medicine.name == "Nifelat" && 
+                               dose.event.time == dinner.time
+                    }
+                    
+                    if nifelatAtDinner {
+                        print("DEBUG: Skipping Utrogestan at dinner exception - conflict with Nifelat")
+                        continue // Skip - this will be handled by fixNifelatUtrogestanConflict
+                    }
+                }
+            }
+            
+            // Remove the original dose from the schedule
+            scheduledDoses.removeAll { 
+                $0.medicine.name == targetDose.medicine.name && 
+                $0.event.time == targetDose.event.time 
+            }
+            
+            // Find the appropriate event based on the exception
+            if let eventFromException = findEventFromException(exception.instruction) {
+                // Create a new dose at the specified event time
+                let quantity = targetDose.quantity
+                let newDose = ScheduledDose(
+                    medicine: medicine,
+                    event: eventFromException,
+                    quantity: quantity,
+                    notes: "Special rule: \(exception.instruction)"
+                )
+                scheduledDoses.append(newDose)
+                
+                // Mark this dose as adjusted
+                adjustedDoses[exception.medicineName]?.insert(doseNumber)
+                
+                print("DEBUG: Rescheduled \(exception.medicineName) dose \(doseNumber) to \(eventFromException.time) based on exception")
+            } else {
+                // For exceptions we don't understand, just add the original dose back with a note
+                let newDose = ScheduledDose(
+                    medicine: targetDose.medicine,
+                    event: targetDose.event,
+                    quantity: targetDose.quantity,
+                    notes: targetDose.notes + "; Special rule: \(exception.instruction)"
+                )
+                scheduledDoses.append(newDose)
+                
+                // Mark this dose as adjusted
+                adjustedDoses[exception.medicineName]?.insert(doseNumber)
+                
+                print("DEBUG: Couldn't understand exception for \(exception.medicineName) dose \(doseNumber), keeping original time")
+            }
+        }
+        
+        // After applying all exceptions, call fixNifelatUtrogestanConflict again to ensure
+        // any remaining conflicts are properly handled
+        fixNifelatUtrogestanConflict(&scheduledDoses)
+        
+        // Resort the schedule by time
+        scheduledDoses.sort { $0.event.time < $1.event.time }
+    }
+    
+    // Helper method to find an event based on exception instructions
+    private func findEventFromException(_ instruction: String) -> DailyEvent? {
+        // Check for common meal patterns
+        if instruction.contains("with dinner") || instruction.contains("with the dinner") {
+            return dailyEvents.first { $0.name == "Dinner" }
+        } else if instruction.contains("with breakfast") || instruction.contains("with the breakfast") {
+            return dailyEvents.first { $0.name == "Breakfast" }
+        } else if instruction.contains("with lunch") || instruction.contains("with the lunch") {
+            return dailyEvents.first { $0.name == "Lunch" }
+        } else if instruction.contains("before sleep") || instruction.contains("before bed") {
+            // Find sleep event and create one 30 minutes before
+            if let sleepEvent = dailyEvents.first(where: { $0.type == .sleep }) {
+                let sleepComponents = sleepEvent.time.split(separator: ":").map { Int($0) ?? 0 }
+                var hour = sleepComponents[0]
+                var minute = sleepComponents[1] - 30
+                
+                if minute < 0 {
+                    minute += 60
+                    hour -= 1
+                    if hour < 0 {
+                        hour += 24
+                    }
+                }
+                
+                let timeString = String(format: "%02d:%02d", hour, minute)
+                return DailyEvent(
+                    name: "Before Sleep",
+                    type: .medicineTime,
+                    time: timeString
+                )
+            }
+        }
+        
+        // If no specific match, return nil and let caller handle it
+        return nil
+    }
 }
 
 // MARK: - Main Program
 
 // Define paths
 let currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+print("Current directory: \(FileManager.default.currentDirectoryPath)")
 // Adjust to find the file in the terapija subdirectory
-let filePath = currentDirectoryURL.appendingPathComponent("terapija/listaLekova.md").path
+let filePath = currentDirectoryURL.appendingPathComponent("listaLekova.md").path
+print("Attempting to read file from: \(filePath)")
 
-print("Medicine Schedule Generator")
-print("==========================")
+print("Terapija - Medicine Schedule Generator")
+print("=====================================")
 print("Reading medicine list from: \(filePath)")
 
 // Parse medicine list from file
