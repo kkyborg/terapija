@@ -989,170 +989,6 @@ class MedicineScheduler {
             }
         }
         
-        // Special case for Nifelat - take with breakfast
-        if medicine.name == "Nifelat" {
-            if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }) {
-                if dosesPerDay == 1 {
-                    // If just one dose, take with breakfast
-                    candidates.append(breakfast)
-                    return candidates
-                } else if dosesPerDay >= 2 {
-                    // First dose with breakfast
-                    candidates.append(breakfast)
-                    
-                    // For multiple doses, evenly distribute throughout the day
-                    // Find sleep time to calculate the active day duration
-                    guard let sleepEvent = dailyEvents.first(where: { $0.type == .sleep }) else {
-                        return candidates
-                    }
-                    
-                    // Convert times to minutes since midnight
-                    let breakfastComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
-                    let breakfastMinutes = breakfastComponents[0] * 60 + breakfastComponents[1]
-                    
-                    let sleepComponents = sleepEvent.time.split(separator: ":").map { Int($0) ?? 0 }
-                    let sleepMinutes = sleepComponents[0] * 60 + sleepComponents[1]
-                    
-                    // Calculate active day duration (breakfast to sleep)
-                    let activeDayMinutes = sleepMinutes > breakfastMinutes ? 
-                        sleepMinutes - breakfastMinutes : 
-                        (24 * 60 - breakfastMinutes) + sleepMinutes
-                    
-                    // Divide the active day into equal parts based on doses per day
-                    let interval = activeDayMinutes / dosesPerDay
-                    
-                    // Create events for each additional dose
-                    for i in 1..<dosesPerDay {
-                        let doseMinutes = (breakfastMinutes + i * interval) % (24 * 60)
-                        let doseHour = doseMinutes / 60
-                        let doseMinute = doseMinutes % 60
-                        
-                        let doseTime = String(format: "%02d:%02d", doseHour, doseMinute)
-                        
-                        // Name the dose based on time of day
-                        let doseName: String
-                        if i == dosesPerDay - 1 {
-                            doseName = "Evening Dose (for Nifelat)"
-                        } else if i == 1 && dosesPerDay == 3 {
-                            doseName = "Midday Dose (for Nifelat)"
-                        } else {
-                            doseName = "Dose \(i+1) (for Nifelat)"
-                        }
-                        
-                        let doseEvent = DailyEvent(
-                            name: doseName,
-                            type: .medicineTime,
-                            time: doseTime
-                        )
-                        
-                        candidates.append(doseEvent)
-                    }
-                    
-                    // Sort by time to ensure proper sequencing
-                    candidates.sort { $0.time < $1.time }
-                    return candidates
-                }
-            }
-        }
-        
-        // Special case for Aleract and Inofolic combi - prefer with meals
-        if (medicine.name == "Aleract" || medicine.name == "Inofolic combi") {
-            // These medicines don't require empty stomach, so prefer with meals
-            let mealEvents = dailyEvents.filter { $0.type == .meal }
-            
-            if dosesPerDay > 1 {
-                if mealEvents.count >= dosesPerDay {
-                    // If we have enough meal events, use them
-                    for i in 0..<min(dosesPerDay, mealEvents.count) {
-                        candidates.append(mealEvents[i])
-                    }
-                } else {
-                    // Not enough meal events, use meals plus evenly spaced times
-                    candidates.append(contentsOf: mealEvents)
-                    
-                    // Calculate wakeup and sleep times to determine the active day duration
-                    let wakeUpEvent = dailyEvents.first(where: { $0.type == .wakeUp }) ?? dailyEvents.first!
-                    let sleepEvent = dailyEvents.first(where: { $0.type == .sleep }) ?? dailyEvents.last!
-                    
-                    // Convert times to minutes since midnight for easier calculations
-                    let wakeUpComponents = wakeUpEvent.time.split(separator: ":").map { Int($0) ?? 0 }
-                    let sleepComponents = sleepEvent.time.split(separator: ":").map { Int($0) ?? 0 }
-                    
-                    let wakeUpMinutes = wakeUpComponents[0] * 60 + wakeUpComponents[1]
-                    let sleepMinutes = sleepComponents[0] * 60 + sleepComponents[1]
-                    
-                    // Calculate active day duration, handling case where sleep is past midnight
-                    let activeDayMinutes = sleepMinutes > wakeUpMinutes ? sleepMinutes - wakeUpMinutes : (24 * 60 - wakeUpMinutes) + sleepMinutes
-                    
-                    // How many more times do we need to add?
-                    let remainingDoses = dosesPerDay - candidates.count
-                    let interval = activeDayMinutes / (remainingDoses + 1) // +1 to space them properly
-                    
-                    // Skip breakfast time since we'll add it manually
-                    let existingTimes = candidates.map { $0.time }
-                    
-                    // Add remaining doses at evenly spaced intervals
-                    for i in 1...remainingDoses {
-                        // Calculate target time in minutes from wakeup, offset to avoid meal times
-                        let targetMinutesFromWakeup = (i * interval) + 30 // offset by 30 minutes
-                        
-                        // Convert to absolute minutes since midnight
-                        let targetMinutes = (wakeUpMinutes + targetMinutesFromWakeup) % (24 * 60)
-                        
-                        // Convert back to hour:minute format
-                        let hour = targetMinutes / 60
-                        let minute = targetMinutes % 60
-                        
-                        let timeString = String(format: "%02d:%02d", hour, minute)
-                        
-                        // Skip if time already exists
-                        if existingTimes.contains(timeString) {
-                            continue
-                        }
-                        
-                        // Create a new medicine event
-                        let newEvent = DailyEvent(
-                            name: "Medicine Time",
-                            type: .medicineTime,
-                            time: timeString
-                        )
-                        candidates.append(newEvent)
-                    }
-                }
-            } else {
-                // For single dose per day, use breakfast
-                if let breakfast = mealEvents.first(where: { $0.name == "Breakfast" }) {
-                    candidates.append(breakfast)
-                } else if !mealEvents.isEmpty {
-                    // Or any other meal if breakfast not available
-                    candidates.append(mealEvents.first!)
-                } else {
-                    // If no meals, use mid-morning
-                    let wakeUpEvent = dailyEvents.first(where: { $0.type == .wakeUp }) ?? dailyEvents.first!
-                    let wakeUpComponents = wakeUpEvent.time.split(separator: ":").map { Int($0) ?? 0 }
-                    let wakeUpMinutes = wakeUpComponents[0] * 60 + wakeUpComponents[1]
-                    
-                    // 2 hours after wakeup
-                    let midMorningMinutes = wakeUpMinutes + 120
-                    let hour = (midMorningMinutes / 60) % 24
-                    let minute = midMorningMinutes % 60
-                    
-                    let timeString = String(format: "%02d:%02d", hour, minute)
-                    let midMorningEvent = DailyEvent(
-                        name: "Morning Medicine Time",
-                        type: .medicineTime,
-                        time: timeString
-                    )
-                    candidates.append(midMorningEvent)
-                }
-            }
-            
-            // Sort by time to ensure proper sequencing
-            candidates.sort { $0.time < $1.time }
-            
-            return candidates
-        }
-        
         // Special case for Vitamin C - always schedule together with Heferal
         if medicine.name == "Vitamin C" {
             // Find the Heferal medicine events first
@@ -1181,103 +1017,364 @@ class MedicineScheduler {
             }
         }
         
-        // Check for specific timing rules
+        // IMPROVED GENERAL CASE FOR ALL OTHER MEDICINES WITH MULTIPLE DOSES
+        // Calculate active day duration first (from wake up to sleep)
+        let wakeUpEvent = dailyEvents.first(where: { $0.type == .wakeUp }) ?? dailyEvents.first!
+        let sleepEvent = dailyEvents.first(where: { $0.type == .sleep }) ?? dailyEvents.last!
+        
+        // Convert times to minutes since midnight for easier calculations
+        let wakeUpComponents = wakeUpEvent.time.split(separator: ":").map { Int($0) ?? 0 }
+        let sleepComponents = sleepEvent.time.split(separator: ":").map { Int($0) ?? 0 }
+        
+        let wakeUpMinutes = wakeUpComponents[0] * 60 + wakeUpComponents[1]
+        let sleepMinutes = sleepComponents[0] * 60 + sleepComponents[1]
+        
+        // Calculate active day duration, handling case where sleep is past midnight
+        let activeDayMinutes = sleepMinutes > wakeUpMinutes ? 
+            sleepMinutes - wakeUpMinutes : (24 * 60 - wakeUpMinutes) + sleepMinutes
+        
+        // Check for specific timing rules that take precedence
         let hasSpecificTiming = medicine.timingRules.contains { rule in
             if case .specificMeal(_) = rule { return true }
             if case .specificTime(_) = rule { return true }
             return false
         }
         
-        if hasSpecificTiming {
-            // Handle medicines with specific timing requirements
-            for event in dailyEvents {
-                // For specific meals, case-insensitive comparison
-                if medicine.canBeTakenAt(dailyEvent: event, takenMedicines: []) {
-                    candidates.append(event)
-                }
-            }
-        } else {
-            // Distribute medicines evenly throughout the active day
-            
-            // Calculate wakeup and sleep times to determine the active day duration
-            let wakeUpEvent = dailyEvents.first(where: { $0.type == .wakeUp }) ?? dailyEvents.first!
-            let sleepEvent = dailyEvents.first(where: { $0.type == .sleep }) ?? dailyEvents.last!
-            
-            // Convert times to minutes since midnight for easier calculations
-            let wakeUpComponents = wakeUpEvent.time.split(separator: ":").map { Int($0) ?? 0 }
-            let sleepComponents = sleepEvent.time.split(separator: ":").map { Int($0) ?? 0 }
-            
-            let wakeUpMinutes = wakeUpComponents[0] * 60 + wakeUpComponents[1]
-            let sleepMinutes = sleepComponents[0] * 60 + sleepComponents[1]
-            
-            // Calculate active day duration, handling case where sleep is past midnight
-            let activeDayMinutes = sleepMinutes > wakeUpMinutes ? sleepMinutes - wakeUpMinutes : (24 * 60 - wakeUpMinutes) + sleepMinutes
-            
-            if dosesPerDay > 1 {
-                // Calculate evenly spaced time intervals
-                let interval = activeDayMinutes / dosesPerDay
-                
-                for i in 0..<dosesPerDay {
-                    // Calculate target time in minutes from wakeup
-                    let targetMinutesFromWakeup = i * interval
+        // Special case for Nifelat - take with breakfast and spread remaining doses
+        if medicine.name == "Nifelat" {
+            if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }) {
+                if dosesPerDay == 1 {
+                    // If just one dose, take with breakfast
+                    candidates.append(breakfast)
+                    return candidates
+                } else if dosesPerDay >= 2 {
+                    // First dose with breakfast
+                    candidates.append(breakfast)
                     
-                    // Convert to absolute minutes since midnight
-                    let targetMinutes = (wakeUpMinutes + targetMinutesFromWakeup) % (24 * 60)
+                    // Special handling for Nifelat - maximize time between doses
+                    // but first dose is fixed at breakfast
+                    let breakfastComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
+                    let breakfastMinutes = breakfastComponents[0] * 60 + breakfastComponents[1]
                     
-                    // Convert back to hour:minute format
-                    let hour = targetMinutes / 60
-                    let minute = targetMinutes % 60
+                    // Divide the active day into equal parts based on doses per day
+                    // But account for the first dose being at breakfast
+                    let remainingDoses = dosesPerDay - 1
+                    let interval = activeDayMinutes / (remainingDoses + 1)  // +1 to account for first dose
                     
-                    let timeString = String(format: "%02d:%02d", hour, minute)
-                    
-                    // Check if this time aligns with an existing event (like a meal)
-                    if let existingEvent = findClosestEvent(to: timeString, preferMeals: true, maxMinutesDiff: 30) {
-                        candidates.append(existingEvent)
-                    } else {
-                        // Create a new medicine event with appropriate naming
-                        let eventName: String
-                        if dosesPerDay <= 3 {
-                            if i == 0 {
-                                eventName = "Morning Dose"
-                            } else if i == dosesPerDay - 1 {
-                                eventName = "Evening Dose"
-                            } else if i == 1 && dosesPerDay == 3 {
-                                eventName = "Midday Dose"
-                            } else {
-                                eventName = "Dose \(i+1)"
-                            }
+                    // Create events for each additional dose, maximizing separation
+                    for i in 1..<dosesPerDay {
+                        // Calculate target time with maximized spacing
+                        let doseMinutes = (breakfastMinutes + i * interval) % (24 * 60)
+                        
+                        // Check if this time is close to a meal event (within 30 minutes)
+                        let nearestEvent = findClosestEvent(to: minutesToTimeString(doseMinutes), 
+                                                           preferMeals: true, 
+                                                           maxMinutesDiff: 30)
+                        
+                        let doseEvent: DailyEvent
+                        
+                        if let event = nearestEvent, event.type == .meal {
+                            // If close to a meal, use the meal time
+                            doseEvent = event
                         } else {
-                            // For higher number of doses, just use numeric naming
-                            eventName = "Dose \(i+1) of \(dosesPerDay)"
+                            // Create a custom time
+                            let doseHour = doseMinutes / 60
+                            let doseMinute = doseMinutes % 60
+                            let doseTime = String(format: "%02d:%02d", doseHour, doseMinute)
+                            
+                            // Name the dose based on position
+                            let doseName: String
+                            if i == dosesPerDay - 1 {
+                                doseName = "Evening Dose (for Nifelat)"
+                            } else if i == 1 && dosesPerDay == 3 {
+                                doseName = "Midday Dose (for Nifelat)"
+                            } else {
+                                doseName = "Dose \(i+1) (for Nifelat)"
+                            }
+                            
+                            doseEvent = DailyEvent(
+                                name: doseName,
+                                type: .medicineTime,
+                                time: doseTime
+                            )
                         }
                         
+                        candidates.append(doseEvent)
+                    }
+                    
+                    // Check for exceptions to align with dinner if needed
+                    let hasSpecialDinnerException = exceptions.contains { 
+                        $0.medicineName == medicine.name && 
+                        ($0.instruction.contains("with dinner") || $0.instruction.contains("with the dinner"))
+                    }
+                    
+                    if hasSpecialDinnerException {
+                        if let dinner = dailyEvents.first(where: { $0.name == "Dinner" }) {
+                            // Find the dose that's closest to dinner
+                            let dinnerComponents = dinner.time.split(separator: ":").map { Int($0) ?? 0 }
+                            let dinnerMinutes = dinnerComponents[0] * 60 + dinnerComponents[1]
+                            
+                            // If dinner is in the second half of the day, align the last dose with it
+                            // Otherwise align a middle dose
+                            let wakeUpToSleepMiddle = (wakeUpMinutes + activeDayMinutes/2) % (24 * 60)
+                            if dinnerMinutes >= wakeUpToSleepMiddle {
+                                // Last dose with dinner
+                                candidates[candidates.count - 1] = dinner
+                            }
+                        }
+                    }
+                    
+                    // Sort by time to ensure proper sequencing
+                    candidates.sort { $0.time < $1.time }
+                    return candidates
+                }
+            }
+        }
+        
+        // Special case for meals-based medicines (Aleract, Inofolic combi, etc)
+        if (medicine.name == "Aleract" || medicine.name == "Inofolic combi") && dosesPerDay > 1 {
+            // These medicines don't require empty stomach, so prefer with meals
+            let mealEvents = dailyEvents.filter { $0.type == .meal }
+            
+            if mealEvents.count >= dosesPerDay {
+                // If we have enough meal events, use them
+                for i in 0..<min(dosesPerDay, mealEvents.count) {
+                    candidates.append(mealEvents[i])
+                }
+                return candidates
+            } else {
+                // Not enough meal events, use all meal events plus optimally spaced additional events
+                candidates.append(contentsOf: mealEvents)
+                
+                // Calculate how many additional events we need
+                let remainingDoses = dosesPerDay - mealEvents.count
+                
+                if remainingDoses > 0 {
+                    // Create a set of all unavailable times (meal times and their immediate surroundings)
+                    var unavailableTimeWindows: [(start: Int, end: Int)] = []
+                    
+                    for mealEvent in mealEvents {
+                        let mealComponents = mealEvent.time.split(separator: ":").map { Int($0) ?? 0 }
+                        let mealMinutes = mealComponents[0] * 60 + mealComponents[1]
+                        
+                        // Add a window around each meal (30 minutes before and after)
+                        let windowStart = (mealMinutes - 30 + 24 * 60) % (24 * 60)
+                        let windowEnd = (mealMinutes + 30) % (24 * 60)
+                        
+                        unavailableTimeWindows.append((windowStart, windowEnd))
+                    }
+                    
+                    // Find available time windows
+                    var availableWindows: [(start: Int, end: Int, duration: Int)] = []
+                    
+                    // Sort meal times for window calculation
+                    let sortedMealTimes = mealEvents.map { event -> Int in
+                        let components = event.time.split(separator: ":").map { Int($0) ?? 0 }
+                        return components[0] * 60 + components[1]
+                    }.sorted()
+                    
+                    // Add the window from wake up to first meal
+                    if let firstMealTime = sortedMealTimes.first, firstMealTime > wakeUpMinutes + 30 {
+                        availableWindows.append((wakeUpMinutes + 30, firstMealTime - 30, 
+                                               firstMealTime - 30 - (wakeUpMinutes + 30)))
+                    }
+                    
+                    // Add windows between meals
+                    for i in 0..<(sortedMealTimes.count - 1) {
+                        let currentMealEnd = (sortedMealTimes[i] + 30) % (24 * 60)
+                        let nextMealStart = (sortedMealTimes[i+1] - 30 + 24 * 60) % (24 * 60)
+                        
+                        if nextMealStart > currentMealEnd {
+                            availableWindows.append((currentMealEnd, nextMealStart, 
+                                                   nextMealStart - currentMealEnd))
+                        }
+                    }
+                    
+                    // Add the window from last meal to sleep
+                    if let lastMealTime = sortedMealTimes.last, 
+                       (lastMealTime + 30) % (24 * 60) < sleepMinutes - 30 {
+                        let lastMealEnd = (lastMealTime + 30) % (24 * 60)
+                        availableWindows.append((lastMealEnd, sleepMinutes - 30, 
+                                               sleepMinutes - 30 - lastMealEnd))
+                    }
+                    
+                    // Sort windows by duration (largest first)
+                    availableWindows.sort { $0.duration > $1.duration }
+                    
+                    // Place remaining doses in the largest available windows
+                    var remainingDosesToPlace = remainingDoses
+                    
+                    for window in availableWindows {
+                        if remainingDosesToPlace <= 0 { break }
+                        
+                        // Place a dose in the middle of this window
+                        let doseTime = (window.start + window.duration / 2) % (24 * 60)
+                        let doseHour = doseTime / 60
+                        let doseMinute = doseTime % 60
+                        
+                        let timeString = String(format: "%02d:%02d", doseHour, doseMinute)
                         let newEvent = DailyEvent(
-                            name: eventName,
+                            name: "Medicine Time",
                             type: .medicineTime,
                             time: timeString
                         )
+                        
                         candidates.append(newEvent)
-                    }
-                }
-                
-                // If we couldn't generate enough events, fall back to using meals
-                if candidates.count < dosesPerDay {
-                    let mealEvents = dailyEvents.filter { $0.type == .meal }
-                    for meal in mealEvents {
-                        if !candidates.contains(where: { $0.time == meal.time }) {
-                            candidates.append(meal)
-                            if candidates.count >= dosesPerDay {
-                                break
-                            }
+                        remainingDosesToPlace -= 1
+                        
+                        // If the window is large enough, we might place more than one dose in it
+                        if window.duration > 180 && remainingDosesToPlace > 0 {  // At least 3 hours wide
+                            // Place another dose 1/3 way into the window
+                            let secondDoseTime = (window.start + window.duration / 3) % (24 * 60)
+                            let secondDoseHour = secondDoseTime / 60
+                            let secondDoseMinute = secondDoseTime % 60
+                            
+                            let secondTimeString = String(format: "%02d:%02d", secondDoseHour, secondDoseMinute)
+                            let secondEvent = DailyEvent(
+                                name: "Medicine Time",
+                                type: .medicineTime,
+                                time: secondTimeString
+                            )
+                            
+                            candidates.append(secondEvent)
+                            remainingDosesToPlace -= 1
                         }
                     }
                 }
                 
                 // Sort by time to ensure proper sequencing
                 candidates.sort { $0.time < $1.time }
+                return candidates
+            }
+        }
+        
+        // For medicines with specific timing requirements, respect those first
+        if hasSpecificTiming {
+            for event in dailyEvents {
+                if medicine.canBeTakenAt(dailyEvent: event, takenMedicines: []) {
+                    candidates.append(event)
+                }
+            }
+            
+            // If we found specific events, return them
+            if !candidates.isEmpty {
+                return candidates
+            }
+        }
+        
+        // GENERAL CASE FOR MEDICINES WITH MULTIPLE DOSES
+        // Improved algorithm to maximize time between doses
+        if dosesPerDay > 1 {
+            // Calculate optimal spacing throughout the active day
+            let interval = activeDayMinutes / dosesPerDay
+            
+            // Create an array to store all candidate times in minutes
+            var doseTimes: [Int] = []
+            
+            // Determine if we should align with meals when possible
+            let shouldAlignWithMeals = !medicine.timingRules.contains(.emptyStomach)
+            let mealEvents = dailyEvents.filter { $0.type == .meal }
+            let mealTimes = mealEvents.map { event -> Int in
+                let components = event.time.split(separator: ":").map { Int($0) ?? 0 }
+                return components[0] * 60 + components[1]
+            }
+            
+            // Try to maximize dose spacing with meal alignment when appropriate
+            for i in 0..<dosesPerDay {
+                // Calculate ideal time with perfect spacing
+                let idealMinutes = (wakeUpMinutes + (i * interval)) % (24 * 60)
                 
-            } else if dosesPerDay == 1 {
-                // If only one dose per day, prefer a meal time if not otherwise specified
+                // If we should align with meals and this is close to a meal time, use the meal time
+                if shouldAlignWithMeals {
+                    // Find the closest meal time if within 30 minutes
+                    var closestMealTime: Int? = nil
+                    var smallestDiff = 31 // Start with > 30 so we only find meals within 30 min
+                    
+                    for mealTime in mealTimes {
+                        let diff = abs(idealMinutes - mealTime)
+                        let wrappedDiff = min(diff, 24*60 - diff) // Handle around-midnight cases
+                        
+                        if wrappedDiff < smallestDiff {
+                            smallestDiff = wrappedDiff
+                            closestMealTime = mealTime
+                        }
+                    }
+                    
+                    if let mealTime = closestMealTime {
+                        doseTimes.append(mealTime)
+                    } else {
+                        doseTimes.append(idealMinutes)
+                    }
+                } else {
+                    // For medicines that can't be aligned with meals, use exactly spaced times
+                    doseTimes.append(idealMinutes)
+                }
+            }
+            
+            // Special handling: Check for any dose times that are too close together 
+            // (could happen if multiple doses got aligned to meals)
+            // Minimum acceptable spacing between doses (60 minutes)
+            let minSpacingMinutes = 60 
+            
+            // Sort dose times for easy comparison
+            doseTimes.sort()
+            
+            // Check spacing between adjacent doses
+            for i in 1..<doseTimes.count {
+                let prevDose = doseTimes[i-1]
+                var currentDose = doseTimes[i]
+                let currentSpacing = (currentDose - prevDose + 24*60) % (24*60)
+                
+                if currentSpacing < minSpacingMinutes {
+                    // Doses are too close, adjust the current dose to ensure minimum spacing
+                    currentDose = (prevDose + minSpacingMinutes) % (24*60)
+                    doseTimes[i] = currentDose
+                }
+            }
+            
+            // Convert dose times back to DailyEvent objects
+            for (i, doseMinutes) in doseTimes.enumerated() {
+                let doseHour = doseMinutes / 60
+                let doseMinute = doseMinutes % 60
+                let timeString = String(format: "%02d:%02d", doseHour, doseMinute)
+                
+                // Check if this time matches a meal event
+                let matchingMealEvent = mealEvents.first { event -> Bool in
+                    let components = event.time.split(separator: ":").map { Int($0) ?? 0 }
+                    let eventMinutes = components[0] * 60 + components[1]
+                    return eventMinutes == doseMinutes
+                }
+                
+                if let mealEvent = matchingMealEvent {
+                    // Use the meal event
+                    candidates.append(mealEvent)
+                } else {
+                    // Create a new medicine event with descriptive naming
+                    let eventName: String
+                    if dosesPerDay <= 3 {
+                        if i == 0 {
+                            eventName = "Morning Dose"
+                        } else if i == dosesPerDay - 1 {
+                            eventName = "Evening Dose"
+                        } else {
+                            eventName = "Midday Dose"
+                        }
+                    } else {
+                        // For higher number of doses, use numeric naming
+                        eventName = "Dose \(i+1) of \(dosesPerDay)"
+                    }
+                    
+                    let newEvent = DailyEvent(
+                        name: eventName,
+                        type: .medicineTime,
+                        time: timeString
+                    )
+                    candidates.append(newEvent)
+                }
+            }
+        } else if dosesPerDay == 1 {
+            // For single doses, prefer breakfast or another meal if appropriate
+            if !medicine.timingRules.contains(.emptyStomach) {
                 let mealEvents = dailyEvents.filter { $0.type == .meal }
                 
                 if let breakfast = mealEvents.first(where: { $0.name.lowercased() == "breakfast" }) {
@@ -1298,39 +1395,45 @@ class MedicineScheduler {
                     )
                     candidates.append(midMorningEvent)
                 }
-            }
-        }
-        
-        // Create special medicine events if needed (e.g., for empty stomach)
-        if candidates.isEmpty && medicine.timingRules.contains(.emptyStomach) && medicine.name != "Eutirox" {
-            // For empty stomach medicines, schedule 30 minutes before breakfast
-            if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }) {
-                // Create a new event 30 minutes before breakfast
-                let timeComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
-                var hour = timeComponents[0]
-                var minute = timeComponents[1] - 30
-                
-                if minute < 0 {
-                    minute += 60
-                    hour -= 1
-                    if hour < 0 {
-                        hour += 24
+            } else {
+                // For empty stomach medicines, schedule 30 minutes before breakfast
+                if let breakfast = dailyEvents.first(where: { $0.name == "Breakfast" }) {
+                    // Create a new event 30 minutes before breakfast
+                    let timeComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
+                    var hour = timeComponents[0]
+                    var minute = timeComponents[1] - 30
+                    
+                    if minute < 0 {
+                        minute += 60
+                        hour -= 1
+                        if hour < 0 {
+                            hour += 24
+                        }
                     }
+                    
+                    let timeString = String(format: "%02d:%02d", hour, minute)
+                    let emptyStomachEvent = DailyEvent(
+                        name: "Before Breakfast",
+                        type: .medicineTime,
+                        time: timeString,
+                        timeSinceLastMeal: 480 // Assuming 8 hours since dinner
+                    )
+                    
+                    candidates.append(emptyStomachEvent)
                 }
-                
-                let timeString = String(format: "%02d:%02d", hour, minute)
-                let emptyStomachEvent = DailyEvent(
-                    name: "Before Breakfast",
-                    type: .medicineTime,
-                    time: timeString,
-                    timeSinceLastMeal: 480 // Assuming 8 hours since dinner
-                )
-                
-                candidates.append(emptyStomachEvent)
             }
         }
         
+        // Sort by time to ensure proper sequencing
+        candidates.sort { $0.time < $1.time }
         return candidates
+    }
+    
+    // Helper function to convert minutes since midnight to a time string
+    private func minutesToTimeString(_ minutes: Int) -> String {
+        let hour = minutes / 60
+        let minute = minutes % 60
+        return String(format: "%02d:%02d", hour, minute)
     }
     
     // Helper method to find the closest event to a target time
