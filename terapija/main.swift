@@ -289,16 +289,26 @@ class MedicineParser {
         var rules: [TimingRule] = []
         var notes: [String] = []
         
-        // Parse per-day dosage
-        if instructions.contains("1x per day") {
-            rules.append(.timesPerDay(1))
-        } else if instructions.contains("2x per day") {
-            rules.append(.timesPerDay(2))
-        } else if instructions.contains("3x per day") {
-            rules.append(.timesPerDay(3))
-        } else if instructions.contains("2x") {
-            // Handle short form of "2x" without "per day"
-            rules.append(.timesPerDay(2))
+        // Parse per-day dosage using regex to handle any number of doses
+        // Pattern to match "Nx per day" or simply "Nx" where N is any number
+        let dosePattern1 = "(\\d+)x per day"
+        let dosePattern2 = "(\\d+)x"
+        
+        // First try the "Nx per day" pattern
+        if let range = instructions.range(of: dosePattern1, options: .regularExpression),
+           let numberRange = instructions[range].range(of: "\\d+", options: .regularExpression) {
+            let doseNumber = String(instructions[numberRange])
+            if let dosesPerDay = Int(doseNumber) {
+                rules.append(.timesPerDay(dosesPerDay))
+            }
+        }
+        // If not found, try the simpler "Nx" pattern
+        else if let range = instructions.range(of: dosePattern2, options: .regularExpression),
+                let numberRange = instructions[range].range(of: "\\d+", options: .regularExpression) {
+            let doseNumber = String(instructions[numberRange])
+            if let dosesPerDay = Int(doseNumber) {
+                rules.append(.timesPerDay(dosesPerDay))
+            }
         }
         
         // Parse timing relative to food
@@ -765,8 +775,8 @@ class MedicineScheduler {
                 
                 candidates.append(beforeSleepEvent)
                 
-                // If 3 doses per day, add a midday dose exactly in the middle
-                if dosesPerDay == 3 {
+                // If more than 2 doses per day, add middle doses evenly spaced
+                if dosesPerDay > 2 {
                     // Calculate first dose time in minutes since midnight
                     let firstDoseComponents = afterBreakfastTime.split(separator: ":").map { Int($0) ?? 0 }
                     let firstDoseMinutes = firstDoseComponents[0] * 60 + firstDoseComponents[1]
@@ -774,24 +784,30 @@ class MedicineScheduler {
                     // Calculate last dose time in minutes since midnight
                     let lastDoseMinutes = beforeSleepHour * 60 + beforeSleepMinute
                     
-                    // Calculate the middle point, handling cases where last dose is before first dose (crosses midnight)
+                    // Calculate the total span, handling cases where last dose is before first dose (crosses midnight)
                     let totalMinutes = lastDoseMinutes > firstDoseMinutes ? 
                         lastDoseMinutes - firstDoseMinutes : (24 * 60 - firstDoseMinutes) + lastDoseMinutes
                     
-                    // Calculate the middle dose time to be exactly halfway between first and last doses
-                    let middleDoseMinutes = (firstDoseMinutes + totalMinutes / 2) % (24 * 60)
+                    // For n doses per day, we need n-2 middle doses (first and last are already set)
+                    let middleDoses = dosesPerDay - 2
                     
-                    let middleDoseHour = middleDoseMinutes / 60
-                    let middleDoseMinute = middleDoseMinutes % 60
-                    
-                    let middleDoseTime = String(format: "%02d:%02d", middleDoseHour, middleDoseMinute)
-                    let middleDoseEvent = DailyEvent(
-                        name: "Middle Dose (for Utrogestan)",
-                        type: .medicineTime,
-                        time: middleDoseTime
-                    )
-                    
-                    candidates.append(middleDoseEvent)
+                    // Add the middle doses at evenly spaced intervals
+                    for i in 1...middleDoses {
+                        // Calculate the middle dose time to be proportionally spaced
+                        let middleDoseMinutes = (firstDoseMinutes + (totalMinutes * i / (middleDoses + 1))) % (24 * 60)
+                        
+                        let middleDoseHour = middleDoseMinutes / 60
+                        let middleDoseMinute = middleDoseMinutes % 60
+                        
+                        let middleDoseTime = String(format: "%02d:%02d", middleDoseHour, middleDoseMinute)
+                        let middleDoseEvent = DailyEvent(
+                            name: middleDoses == 1 ? "Middle Dose (for Utrogestan)" : "Dose \(i+1) (for Utrogestan)",
+                            type: .medicineTime,
+                            time: middleDoseTime
+                        )
+                        
+                        candidates.append(middleDoseEvent)
+                    }
                 }
                 
                 // Sort by time to ensure proper sequencing
@@ -808,25 +824,59 @@ class MedicineScheduler {
                     // If just one dose, take with breakfast
                     candidates.append(breakfast)
                     return candidates
-                } else if dosesPerDay == 2 {
+                } else if dosesPerDay >= 2 {
                     // First dose with breakfast
                     candidates.append(breakfast)
                     
-                    // Second dose in afternoon (6-8 hours later)
+                    // For multiple doses, evenly distribute throughout the day
+                    // Find sleep time to calculate the active day duration
+                    guard let sleepEvent = dailyEvents.first(where: { $0.type == .sleep }) else {
+                        return candidates
+                    }
+                    
+                    // Convert times to minutes since midnight
                     let breakfastComponents = breakfast.time.split(separator: ":").map { Int($0) ?? 0 }
                     let breakfastMinutes = breakfastComponents[0] * 60 + breakfastComponents[1]
-                    let secondDoseMinutes = breakfastMinutes + 420 // 7 hours after breakfast (middle of 6-8 hr range)
-                    let secondDoseHour = (secondDoseMinutes / 60) % 24
-                    let secondDoseMinute = secondDoseMinutes % 60
                     
-                    let secondDoseTime = String(format: "%02d:%02d", secondDoseHour, secondDoseMinute)
-                    let secondDoseEvent = DailyEvent(
-                        name: "Afternoon Dose (for Nifelat)",
-                        type: .medicineTime,
-                        time: secondDoseTime
-                    )
+                    let sleepComponents = sleepEvent.time.split(separator: ":").map { Int($0) ?? 0 }
+                    let sleepMinutes = sleepComponents[0] * 60 + sleepComponents[1]
                     
-                    candidates.append(secondDoseEvent)
+                    // Calculate active day duration (breakfast to sleep)
+                    let activeDayMinutes = sleepMinutes > breakfastMinutes ? 
+                        sleepMinutes - breakfastMinutes : 
+                        (24 * 60 - breakfastMinutes) + sleepMinutes
+                    
+                    // Divide the active day into equal parts based on doses per day
+                    let interval = activeDayMinutes / dosesPerDay
+                    
+                    // Create events for each additional dose
+                    for i in 1..<dosesPerDay {
+                        let doseMinutes = (breakfastMinutes + i * interval) % (24 * 60)
+                        let doseHour = doseMinutes / 60
+                        let doseMinute = doseMinutes % 60
+                        
+                        let doseTime = String(format: "%02d:%02d", doseHour, doseMinute)
+                        
+                        // Name the dose based on time of day
+                        let doseName: String
+                        if i == dosesPerDay - 1 {
+                            doseName = "Evening Dose (for Nifelat)"
+                        } else if i == 1 && dosesPerDay == 3 {
+                            doseName = "Midday Dose (for Nifelat)"
+                        } else {
+                            doseName = "Dose \(i+1) (for Nifelat)"
+                        }
+                        
+                        let doseEvent = DailyEvent(
+                            name: doseName,
+                            type: .medicineTime,
+                            time: doseTime
+                        )
+                        
+                        candidates.append(doseEvent)
+                    }
+                    
+                    // Sort by time to ensure proper sequencing
                     candidates.sort { $0.time < $1.time }
                     return candidates
                 }
@@ -1012,9 +1062,25 @@ class MedicineScheduler {
                     if let existingEvent = findClosestEvent(to: timeString, preferMeals: true, maxMinutesDiff: 30) {
                         candidates.append(existingEvent)
                     } else {
-                        // Create a new medicine event
+                        // Create a new medicine event with appropriate naming
+                        let eventName: String
+                        if dosesPerDay <= 3 {
+                            if i == 0 {
+                                eventName = "Morning Dose"
+                            } else if i == dosesPerDay - 1 {
+                                eventName = "Evening Dose"
+                            } else if i == 1 && dosesPerDay == 3 {
+                                eventName = "Midday Dose"
+                            } else {
+                                eventName = "Dose \(i+1)"
+                            }
+                        } else {
+                            // For higher number of doses, just use numeric naming
+                            eventName = "Dose \(i+1) of \(dosesPerDay)"
+                        }
+                        
                         let newEvent = DailyEvent(
-                            name: "Medicine Time",
+                            name: eventName,
                             type: .medicineTime,
                             time: timeString
                         )

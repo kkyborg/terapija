@@ -1,10 +1,9 @@
-
-- Eutirox: 4 days = 50mg + 3 days = 75mg (take it on empty stomach, in the morning, 30-60 minutes before taking the food and 30-60 minutes apart from any other medicines)
+- Eutirox: 4 days = 50mg + 3 days = 75mg (take it on empty stomach, in the morning, 30 minutes before taking the food and 30 minutes apart from any other medicines)
 - Aleract: 2x per day
 - Inofolic combi: 2x per day
 - Pronison 5mg: 1x per day (recommended after breakfast)
 - Utrogestan 200mg: 3x per day
-- Nifelat: 2x (must be taken at least 1-2h apart from Utrogestan)
+- Nifelat: 3x (must be taken at least 1 hour apart from Utrogestan)
 - Prenatal Esential: 1x per day
 - Heferal: 2x per day (on empty stomach but with C vitamin or citruses, but NOT with milk NOR calcium)
 - Vitamin C: 2x per day (together with Heferal)
