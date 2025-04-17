@@ -1439,7 +1439,7 @@ scheduler.setDailyEvents(
     breakfastTime:  "09:00",
     lunchTime:      "14:00",
     dinnerTime:     "17:00",
-    sleepTime:      "23:00"
+    sleepTime:      "23:59"
 )
 
 // Generate the daily schedule
