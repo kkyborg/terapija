@@ -218,36 +218,52 @@ struct DailySchedule {
         let sortedTimes = timelineByTime.keys.sorted()
         
         for time in sortedTimes {
-            print("\(time):")
+            // Get entries for this time and separate events from medicines
+            let entries = timelineByTime[time]!
+            let events = entries.filter { $0.isEvent }
+            let medicines = entries.filter { !$0.isEvent }
             
-            // Sort to show events first, then medicines
-            let sortedEntries = timelineByTime[time]!.sorted { $0.isEvent && !$1.isEvent }
+            // Start line with time
+            var timeLine = "\(time):"
             
-            for entry in sortedEntries {
-                if entry.isEvent {
-                    if entry.name == "Wake Up" {
-                        print("  ☀️  \(entry.name)")
-                    } else if entry.name == "Sleep" {
-                        print("  🛏️  \(entry.name)")
-                    } else if entry.name == "Breakfast" {
-                        print("  🥑 \(entry.name)")
-                        print("")  // Add a newline after Breakfast
-                    } else if entry.name == "Lunch" {
-                        print("  🍗 \(entry.name)")
-                        print("")  // Add a newline after Lunch
-                    } else if entry.name == "Dinner" {
-                        print("  🍝 \(entry.name)")
-                        print("")  // Add a newline after Dinner
-                    } else if !entry.details.isEmpty {
-                        print("  📅 \(entry.name)")
-                    } else {
-                        print("  📅 \(entry.name)")
-                    }
+            // If there's an event, add it to the time line
+            if !events.isEmpty {
+                let event = events[0] // Just take the first event if multiple (shouldn't happen)
+                
+                if event.name == "Wake Up" {
+                    timeLine += " ☀️  \(event.name)"
+                } else if event.name == "Sleep" {
+                    timeLine += " 🛏️  \(event.name)"
+                } else if event.name == "Breakfast" {
+                    timeLine += " 🥑 \(event.name)"
+                } else if event.name == "Lunch" {
+                    timeLine += " 🍗 \(event.name)"
+                } else if event.name == "Dinner" {
+                    timeLine += " 🍝 \(event.name)"
+                } else if !event.details.isEmpty {
+                    timeLine += " 📅 \(event.name)"
                 } else {
-                    // Use only uppercase for medicine names, without asterisks or emoji
-                    print("  💊 \(entry.name): \(entry.details)")
+                    timeLine += " 📅 \(event.name)"
                 }
             }
+            
+            // Print the time line
+            print(timeLine)
+            
+            // If there are medicines, print them on separate lines
+            if !medicines.isEmpty {
+                // If we just printed a meal event, add a blank line
+                if events.contains(where: { ["Breakfast", "Lunch", "Dinner"].contains($0.name) }) {
+                    print("")
+                }
+                
+                // Print all medicines
+                for medicine in medicines {
+                    print("  💊 \(medicine.name): \(medicine.details)")
+                }
+            }
+            
+            // Add a blank line after each time entry
             print("")
         }
     }
