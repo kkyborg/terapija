@@ -439,8 +439,9 @@ class MedicineParser {
             rules.append(.specificMeal("Breakfast"))
             notes.append("Take after breakfast")
         }
-        if instructions.contains("with the dinner") {
+        if instructions.contains("with the dinner") || instructions.contains("with dinner") {
             rules.append(.specificMeal("Dinner"))
+            notes.append("Take with dinner")
         }
         
         // Parse timing relative to other medicines
@@ -1038,6 +1039,14 @@ class MedicineScheduler {
             if case .specificMeal(_) = rule { return true }
             if case .specificTime(_) = rule { return true }
             return false
+        }
+        
+        // Special handling for Glukophage - always with dinner
+        if medicine.name == "Glukophage 1000xr" {
+            if let dinner = dailyEvents.first(where: { $0.name == "Dinner" }) {
+                candidates.append(dinner)
+                return candidates
+            }
         }
         
         // Special case for Nifelat - take with breakfast and spread remaining doses
@@ -1647,6 +1656,99 @@ class MedicineScheduler {
             }
         }
         
+        // Additional check: find any Utrogestan and Nifelat doses that are too close
+        // First collect all doses by medicine
+        let utrogestanDoses = scheduledDoses.filter { $0.medicine.name == "Utrogestan 200mg" }
+        let nifelatDoses = scheduledDoses.filter { $0.medicine.name == "Nifelat" }
+        
+        // Check for violations and adjust them
+        for utrogestanDose in utrogestanDoses {
+            let utrogestanTime = utrogestanDose.event.time
+            let utrogestanMinutes = timeStringToMinutes(utrogestanTime)
+            
+            for nifelatDose in nifelatDoses {
+                // Skip checking Nifelat dose 3 at dinner - that's handled separately
+                if nifelatDose3AtDinner && nifelatDose.event.time == dinnerTime && 
+                   nifelatDose.quantity.contains("3 of") {
+                    continue
+                }
+                
+                let nifelatTime = nifelatDose.event.time
+                let nifelatMinutes = timeStringToMinutes(nifelatTime)
+                
+                // Calculate time difference
+                let diff = abs(utrogestanMinutes - nifelatMinutes)
+                let wrappedDiff = min(diff, 24*60 - diff) // Handle around-midnight cases
+                
+                // If too close, move one of them
+                if wrappedDiff < 90 {
+                    // If Nifelat is before Utrogestan and they're too close, move Nifelat earlier
+                    if nifelatMinutes < utrogestanMinutes && (utrogestanMinutes - nifelatMinutes) < 90 {
+                        // Move Nifelat earlier by the necessary amount
+                        let neededAdjustment = 90 - (utrogestanMinutes - nifelatMinutes)
+                        let newNifelatMinutes = (nifelatMinutes - neededAdjustment + 24*60) % (24*60)
+                        let newTime = minutesToTimeString(newNifelatMinutes)
+                        
+                        // Remove and reschedule the Nifelat dose
+                        scheduledDoses.removeAll { $0.event.time == nifelatTime && $0.medicine.name == "Nifelat" }
+                        
+                        // Create a new event
+                        let newEvent = DailyEvent(
+                            name: "Adjusted for Utrogestan separation",
+                            type: .medicineTime,
+                            time: newTime
+                        )
+                        
+                        // Create a new dose with proper numbering
+                        let newDose = ScheduledDose(
+                            medicine: nifelatDose.medicine,
+                            event: newEvent,
+                            quantity: nifelatDose.quantity,
+                            notes: nifelatDose.notes + "; Must be taken at least 1-2 hours apart from Utrogestan"
+                        )
+                        
+                        scheduledDoses.append(newDose)
+                    }
+                    // If Utrogestan is before Nifelat and they're too close, move Nifelat later
+                    else if utrogestanMinutes < nifelatMinutes && (nifelatMinutes - utrogestanMinutes) < 90 {
+                        // Move Nifelat later by the necessary amount
+                        let neededAdjustment = 90 - (nifelatMinutes - utrogestanMinutes)
+                        let newNifelatMinutes = (nifelatMinutes + neededAdjustment) % (24*60)
+                        let newTime = minutesToTimeString(newNifelatMinutes)
+                        
+                        // Remove and reschedule the Nifelat dose
+                        scheduledDoses.removeAll { $0.event.time == nifelatTime && $0.medicine.name == "Nifelat" }
+                        
+                        // Create a new event
+                        let newEvent = DailyEvent(
+                            name: "Adjusted for Utrogestan separation",
+                            type: .medicineTime,
+                            time: newTime
+                        )
+                        
+                        // Create a new dose with proper numbering
+                        let newDose = ScheduledDose(
+                            medicine: nifelatDose.medicine,
+                            event: newEvent,
+                            quantity: nifelatDose.quantity,
+                            notes: nifelatDose.notes + "; Must be taken at least 1-2 hours apart from Utrogestan"
+                        )
+                        
+                        scheduledDoses.append(newDose)
+                    }
+                }
+            }
+        }
+        
+        // Rebuild the dosesByTime map after adjustments
+        dosesByTime = [:]
+        for dose in scheduledDoses {
+            if dosesByTime[dose.event.time] == nil {
+                dosesByTime[dose.event.time] = []
+            }
+            dosesByTime[dose.event.time]?.append(dose)
+        }
+        
         // Check each time slot for conflicts
         for (time, doses) in dosesByTime {
             let hasUtrogestan = doses.contains { $0.medicine.name == "Utrogestan 200mg" }
@@ -1979,6 +2081,12 @@ class MedicineScheduler {
         
         // If no specific match, return nil and let caller handle it
         return nil
+    }
+    
+    // Helper function to convert time string to minutes
+    private func timeStringToMinutes(_ time: String) -> Int {
+        let components = time.split(separator: ":").map { Int($0) ?? 0 }
+        return components[0] * 60 + components[1]
     }
 }
 
