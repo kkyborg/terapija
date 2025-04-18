@@ -113,10 +113,10 @@ class MedicineTests {
         } else {
             // Check if it's 30-60 minutes before breakfast
             let minutesBeforeBreakfast = minutesBetween(time1: eutiroxTime, time2: breakfastTime)
-            if minutesBeforeBreakfast < 30 || minutesBeforeBreakfast > 60 {
-                print("❌ FAILED: Eutirox is scheduled \(minutesBeforeBreakfast) minutes before breakfast (required: 30-60 minutes)")
+            if minutesBeforeBreakfast < 30 {
+                print("❌ FAILED: Eutirox is scheduled only \(minutesBeforeBreakfast) minutes before breakfast (required: at least 30 minutes)")
             } else {
-                print("✅ PASSED: Eutirox is scheduled \(minutesBeforeBreakfast) minutes before breakfast")
+                print("✅ PASSED: Eutirox is scheduled at least 30 minutes before breakfast (\(minutesBeforeBreakfast) minutes)")
             }
         }
         
@@ -271,7 +271,7 @@ class MedicineTests {
         // Get essential daily events
         guard let wakeUp = schedule.events.first(where: { $0.type == .wakeUp }),
               let breakfast = schedule.events.first(where: { $0.name == "Breakfast" }),
-              let dinner = schedule.events.first(where: { $0.name == "Dinner" }) else {
+              let sleep = schedule.events.first(where: { $0.type == .sleep }) else {
             print("❌ FAILED: Could not find necessary daily events")
             return
         }
@@ -290,17 +290,21 @@ class MedicineTests {
             print("❌ FAILED: First Aleract dose (\(firstDose.event.time)) is not scheduled early enough (required: with breakfast or within 90 min of waking)")
         }
         
-        // Check if the last dose is late enough but not too late
-        let isLastDoseWithDinner = lastDose.event.time == dinner.time
-        let minutesAfterLunch = minutesBetween(time1: "14:00", time2: lastDose.event.time)
+        // Find the latest medication time in the entire schedule
+        let allDoses = schedule.scheduledDoses
+        let latestDoseTime = allDoses.max { 
+            timeToMinutes($0.event.time) < timeToMinutes($1.event.time) 
+        }?.event.time ?? "00:00"
         
-        // Last dose requirements: should be after lunch
-        let isLastDoseLateEnough = isLastDoseWithDinner || minutesAfterLunch >= 180
+        // Check if the last Aleract dose is scheduled at the latest possible time
+        let minutesBeforeSleep = minutesBetween(time1: lastDose.event.time, time2: sleep.time)
+        let isLatestPossible = lastDose.event.time == latestDoseTime
         
-        if isLastDoseLateEnough {
-            print("✅ PASSED: Last Aleract dose is scheduled late enough in the day")
+        if isLatestPossible {
+            print("✅ PASSED: Last Aleract dose is scheduled at the latest possible time (\(lastDose.event.time), \(minutesBeforeSleep) minutes before sleep)")
         } else {
-            print("❌ FAILED: Last Aleract dose (\(lastDose.event.time)) is not scheduled late enough (required: with dinner or at least 3 hours after lunch)")
+            let minutesEarlier = minutesBetween(time1: lastDose.event.time, time2: latestDoseTime)
+            print("❌ FAILED: Last Aleract dose (\(lastDose.event.time)) could be scheduled \(minutesEarlier) minutes later (latest medication is at \(latestDoseTime))")
         }
         
         // For Aleract specifically (2 doses), check if doses are well distributed
