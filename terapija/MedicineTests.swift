@@ -295,7 +295,7 @@ class MedicineTests {
         let isFirstDoseEarlyEnough = isFirstDoseWithBreakfast || minutesAfterWakeUp <= 90
         
         if isFirstDoseEarlyEnough {
-            print("✅ PASSED: First Aleract dose is scheduled early enough in the day")
+            print("✅ PASSED: First Aleract dose is scheduled early enough in the day (\(firstDose.event.time))")
         } else {
             print("❌ FAILED: First Aleract dose (\(firstDose.event.time)) is not scheduled early enough (required: with breakfast or within 90 min of waking)")
         }
