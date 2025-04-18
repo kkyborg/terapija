@@ -37,6 +37,4 @@ try testProcess.run()
 testProcess.waitUntilExit()
 
 // Clean up the temporary file
-try FileManager.default.removeItem(atPath: tempTestFile)
-
-print("✅ Test run completed.") 
+try FileManager.default.removeItem(atPath: tempTestFile) 

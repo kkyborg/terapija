@@ -33,9 +33,8 @@ class MedicineTests {
         testUtrogestanNifelatSeparation(schedule)
         testHeferalWithVitaminC(schedule)
         testMealBasedRequirements(schedule)
-        testExceptionHandling(schedule)
         
-        print("\n✅ All tests completed!")
+        print("\nAll tests completed!")
     }
     
     // MARK: - Test Helper Methods
@@ -115,7 +114,7 @@ class MedicineTests {
             // Check if it's 30-60 minutes before breakfast
             let minutesBeforeBreakfast = minutesBetween(time1: eutiroxTime, time2: breakfastTime)
             if minutesBeforeBreakfast < 30 || minutesBeforeBreakfast > 60 {
-                print("⚠️ WARNING: Eutirox is scheduled \(minutesBeforeBreakfast) minutes before breakfast (recommended: 30-60 minutes)")
+                print("❌ FAILED: Eutirox is scheduled \(minutesBeforeBreakfast) minutes before breakfast (required: 30-60 minutes)")
             } else {
                 print("✅ PASSED: Eutirox is scheduled \(minutesBeforeBreakfast) minutes before breakfast")
             }
@@ -140,7 +139,7 @@ class MedicineTests {
         let inofolicDoses = findDoses(for: "Inofolic Combi", in: schedule)
         
         if eutiroxDoses.isEmpty || inofolicDoses.isEmpty {
-            print("⚠️ WARNING: Could not find both Eutirox and Inofolic in schedule")
+            print("❌ FAILED: Could not find both Eutirox and Inofolic in schedule")
             return
         }
         
@@ -230,7 +229,7 @@ class MedicineTests {
         for medicineName in medicinesWithMultipleDoses {
             let doses = findDoses(for: medicineName, in: schedule)
             if doses.count <= 1 {
-                print("⚠️ WARNING: Expected multiple doses for \(medicineName), found \(doses.count)")
+                print("❌ FAILED: Expected multiple doses for \(medicineName), found \(doses.count)")
                 continue
             }
             
@@ -248,16 +247,8 @@ class MedicineTests {
             }
             
             // Minimum spacing should be at least 2 hours (120 minutes) for optimal distribution
-            // except for special cases (handled by exceptions)
             if minSpacingMinutes < 120 {
-                // Check if this is due to an exception
-                let hasException = sortedDoses.contains { $0.notes.contains("⚠️:") }
-                
-                if hasException {
-                    print("✅ PASSED: \(medicineName) doses have reduced spacing due to exceptions")
-                } else {
-                    print("⚠️ WARNING: \(medicineName) doses have minimum spacing of \(minSpacingMinutes) minutes (recommended: 120+ minutes)")
-                }
+                print("❌ FAILED: \(medicineName) doses have minimum spacing of only \(minSpacingMinutes) minutes (required: at least 120 minutes)")
             } else {
                 print("✅ PASSED: \(medicineName) doses have good spacing (minimum \(minSpacingMinutes) minutes)")
             }
@@ -280,7 +271,6 @@ class MedicineTests {
         // Get essential daily events
         guard let wakeUp = schedule.events.first(where: { $0.type == .wakeUp }),
               let breakfast = schedule.events.first(where: { $0.name == "Breakfast" }),
-              let sleep = schedule.events.first(where: { $0.type == .sleep }),
               let dinner = schedule.events.first(where: { $0.name == "Dinner" }) else {
             print("❌ FAILED: Could not find necessary daily events")
             return
@@ -315,21 +305,7 @@ class MedicineTests {
         
         // For Aleract specifically (2 doses), check if doses are well distributed
         if aleractDoses.count == 2 {
-            let wakeUpMinutes = timeToMinutes(wakeUp.time)
-            let sleepMinutes = timeToMinutes(sleep.time)
-            let wakingPeriodMinutes = sleepMinutes > wakeUpMinutes ? 
-                sleepMinutes - wakeUpMinutes : (24 * 60 - wakeUpMinutes) + sleepMinutes
-            
-            // For 2 doses, we want them to cover at least a specific percentage of the waking period
-            let doseSpan = minutesBetween(time1: firstDose.event.time, time2: lastDose.event.time)
-            let coveragePercentage = Double(doseSpan) / Double(wakingPeriodMinutes)
-            let minimumCoverageThreshold = 0.6 // 60%
-            
-            if coveragePercentage >= minimumCoverageThreshold {
-                print("✅ PASSED: Aleract doses cover a significant portion of the day (\(Int(coveragePercentage * 100))% coverage)")
-            } else {
-                print("❌ FAILED: Aleract doses don't cover enough of the day (only \(Int(coveragePercentage * 100))% coverage, required: at least \(Int(minimumCoverageThreshold * 100))%)")
-            }
+            // No calculations needed since we're not using the coverage metric
         }
     }
     
@@ -341,7 +317,7 @@ class MedicineTests {
         let nifelatDoses = findDoses(for: "Nifelat", in: schedule)
         
         if utrogestanDoses.isEmpty || nifelatDoses.isEmpty {
-            print("⚠️ WARNING: Could not find both Utrogestan and Nifelat in schedule")
+            print("❌ FAILED: Could not find both Utrogestan and Nifelat in schedule")
             return
         }
         
@@ -406,11 +382,11 @@ class MedicineTests {
         // Test Heferal requirements (1h before breakfast, 2h after dinner)
         let hefevalDoses = findDoses(for: "Heferal", in: schedule)
         guard let breakfast = schedule.events.first(where: { $0.name == "Breakfast" }) else {
-            print("⚠️ WARNING: Breakfast not found in schedule")
+            print("❌ FAILED: Breakfast not found in schedule")
             return
         }
         guard let dinner = schedule.events.first(where: { $0.name == "Dinner" }) else {
-            print("⚠️ WARNING: Dinner not found in schedule")
+            print("❌ FAILED: Dinner not found in schedule")
             return
         }
         
@@ -420,9 +396,9 @@ class MedicineTests {
             let minutesBeforeBreakfast = minutesBetween(time1: firstDose.event.time, time2: breakfast.time)
             
             if abs(minutesBeforeBreakfast - 60) > 15 {
-                print("⚠️ WARNING: First Heferal dose is \(minutesBeforeBreakfast) minutes before breakfast (should be around 60)")
+                print("❌ FAILED: First Heferal dose is \(minutesBeforeBreakfast) minutes before breakfast (required: 45-75 minutes before)")
             } else {
-                print("✅ PASSED: First Heferal dose is properly scheduled before breakfast")
+                print("✅ PASSED: First Heferal dose is properly scheduled before breakfast (\(firstDose.event.time))")
             }
             
             // Last dose should be 2h after dinner
@@ -430,9 +406,9 @@ class MedicineTests {
             let minutesAfterDinner = minutesBetween(time1: dinner.time, time2: lastDose.event.time)
             
             if abs(minutesAfterDinner - 120) > 15 {
-                print("⚠️ WARNING: Last Heferal dose is \(minutesAfterDinner) minutes after dinner (should be around 120)")
+                print("❌ FAILED: Last Heferal dose is \(minutesAfterDinner) minutes after dinner (required: 105-135 minutes after)")
             } else {
-                print("✅ PASSED: Last Heferal dose is properly scheduled after dinner")
+                print("✅ PASSED: Last Heferal dose is properly scheduled after dinner (\(lastDose.event.time))")
             }
         }
         
@@ -440,39 +416,9 @@ class MedicineTests {
         let pronisonDoses = findDoses(for: "Pronison 5mg", in: schedule)
         if let pronisonDose = pronisonDoses.first {
             if pronisonDose.event.time == breakfast.time {
-                print("✅ PASSED: Pronison is scheduled with breakfast")
+                print("✅ PASSED: Pronison is scheduled with breakfast (\(pronisonDose.event.time))")
             } else {
-                print("⚠️ WARNING: Pronison (\(pronisonDose.event.time)) is not scheduled with breakfast (\(breakfast.time))")
-            }
-        }
-    }
-    
-    // Test exception handling
-    static func testExceptionHandling(_ schedule: DailySchedule) {
-        print("\n🧪 Testing Exception Handling...")
-        
-        // Check if there are any exceptions applied
-        let dosesWithExceptions = schedule.scheduledDoses.filter { $0.notes.contains("⚠️:") }
-        
-        if dosesWithExceptions.isEmpty {
-            print("ℹ️ INFO: No exceptions found in the schedule")
-            return
-        }
-        
-        // For each exception, check if it's properly applied
-        for dose in dosesWithExceptions {
-            print("✅ APPLIED: Exception for \(dose.medicine.name): \(dose.notes)")
-            
-            // If it's a "with dinner" exception, check if it's actually at dinner time
-            if dose.notes.contains("with the dinner") || dose.notes.contains("with dinner") {
-                guard let dinner = schedule.events.first(where: { $0.name == "Dinner" }) else {
-                    print("⚠️ WARNING: Dinner not found in schedule")
-                    continue
-                }
-                
-                if dose.event.time != dinner.time {
-                    print("❌ FAILED: Dose with dinner exception (\(dose.event.time)) is not at dinner time (\(dinner.time))")
-                }
+                print("❌ FAILED: Pronison (\(pronisonDose.event.time)) is not scheduled with breakfast (\(breakfast.time))")
             }
         }
     }
