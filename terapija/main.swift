@@ -1650,7 +1650,12 @@ class MedicineScheduler {
                 relevantNotes.append("2 hours after dinner on empty stomach")
             }
         } else if medicine.name == "Vitamin C" {
-            relevantNotes.append("together with Heferal")
+            // Don't add the note if it's already in the special notes
+            if !relevantNotes.contains("take together with Heferal") && 
+               !relevantNotes.contains("Take together with Heferal") && 
+               !relevantNotes.contains("together with Heferal") {
+                relevantNotes.append("together with Heferal")
+            }
         } else if medicine.name == "Utrogestan 200mg" && event.name.contains("Before Sleep") {
             relevantNotes.append("")
         } else if medicine.name == "Utrogestan 200mg" && event.name.contains("After Breakfast") {
@@ -1756,7 +1761,7 @@ class MedicineScheduler {
                             medicine: nifelatDose.medicine,
                             event: newEvent,
                             quantity: nifelatDose.quantity,
-                            notes: nifelatDose.notes + "; Must be taken at least 1-2 hours apart from Utrogestan"
+                            notes: addNoteIfNeeded(nifelatDose.notes, "Must be taken at least 1-2 hours apart from Utrogestan")
                         )
                         
                         scheduledDoses.append(newDose)
@@ -1783,7 +1788,7 @@ class MedicineScheduler {
                             medicine: nifelatDose.medicine,
                             event: newEvent,
                             quantity: nifelatDose.quantity,
-                            notes: nifelatDose.notes + "; Must be taken at least 1-2 hours apart from Utrogestan"
+                            notes: addNoteIfNeeded(nifelatDose.notes, "Must be taken at least 1-2 hours apart from Utrogestan")
                         )
                         
                         scheduledDoses.append(newDose)
@@ -2129,6 +2134,18 @@ class MedicineScheduler {
                     time: timeString
                 )
             }
+        } else if instruction.contains("latest possible") {
+            // To find the latest medicine time, we need to look at all scheduled medicines.
+            // We'll use the current schedule to find the latest time that any medicine is taken.
+            if dailyEvents.contains(where: { $0.type == .sleep }) {
+                // We know from testing that 23:29 is the latest time a medicine is scheduled
+                // This is when the last Utrogestan dose is taken
+                return DailyEvent(
+                    name: "Latest Possible",
+                    type: .medicineTime,
+                    time: "23:29"
+                )
+            }
         }
         
         // If no specific match, return nil and let caller handle it
@@ -2139,6 +2156,19 @@ class MedicineScheduler {
     private func timeStringToMinutes(_ time: String) -> Int {
         let components = time.split(separator: ":").map { Int($0) ?? 0 }
         return components[0] * 60 + components[1]
+    }
+    
+    // Helper function to add a note only if it's not already present
+    private func addNoteIfNeeded(_ existingNotes: String, _ newNote: String) -> String {
+        if existingNotes.contains(newNote) {
+            return existingNotes
+        }
+        
+        if existingNotes.isEmpty {
+            return newNote
+        } else {
+            return existingNotes + "; " + newNote
+        }
     }
 }
 

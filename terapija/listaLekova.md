@@ -13,4 +13,6 @@
 
 # EXCEPTIONS
 
-- Eutirox: with dinner
+
+- Aleract: dose 2, latest possible
+- Inofolic Combi: dose 2, latest possible
