@@ -784,6 +784,58 @@ class MedicineScheduler {
             }
         }
         
+        // Special case for Inofolic Combi - must be taken at least 30 minutes after Eutirox
+        if medicine.name == "Inofolic Combi" {
+            // Check if Eutirox is already scheduled
+            if let eutiroxEntry = scheduledMedicinesByTime.first(where: { $0.value.contains(where: { $0.name == "Eutirox" }) }) {
+                // Get the Eutirox time
+                let eutiroxTime = eutiroxEntry.key
+                let eutiroxComponents = eutiroxTime.split(separator: ":").map { Int($0) ?? 0 }
+                let eutiroxMinutes = eutiroxComponents[0] * 60 + eutiroxComponents[1]
+                
+                // Schedule Inofolic at least 30 minutes after Eutirox
+                let inofolicMinutes = eutiroxMinutes + 30
+                let inofolicHour = inofolicMinutes / 60
+                let inofolicMinute = inofolicMinutes % 60
+                
+                let timeString = String(format: "%02d:%02d", inofolicHour, inofolicMinute)
+                let firstDoseEvent = DailyEvent(
+                    name: "Morning Dose (for Inofolic)",
+                    type: .medicineTime,
+                    time: timeString,
+                    timeSinceLastMeal: 480 // Assuming 8 hours since dinner
+                )
+                
+                candidates.append(firstDoseEvent)
+                
+                // If multiple doses per day, distribute them throughout the day
+                if dosesPerDay > 1 {
+                    // Create events for the remaining doses
+                    // For simplicity, we'll space them evenly throughout the afternoon
+                    if let lunch = dailyEvents.first(where: { $0.name == "Lunch" }) {
+                        let lunchComponents = lunch.time.split(separator: ":").map { Int($0) ?? 0 }
+                        let lunchMinutes = lunchComponents[0] * 60 + lunchComponents[1]
+                        
+                        // Add second dose around afternoon
+                        let secondDoseMinutes = lunchMinutes + 109 // ~1.8 hours after lunch
+                        let secondDoseHour = secondDoseMinutes / 60
+                        let secondDoseMinute = secondDoseMinutes % 60
+                        
+                        let secondDoseTime = String(format: "%02d:%02d", secondDoseHour, secondDoseMinute)
+                        let secondDoseEvent = DailyEvent(
+                            name: "Afternoon Dose (for Inofolic)",
+                            type: .medicineTime,
+                            time: secondDoseTime
+                        )
+                        
+                        candidates.append(secondDoseEvent)
+                    }
+                }
+                
+                return candidates
+            }
+        }
+        
         // Special case for Heferal - must be taken on empty stomach with vitamin C
         if medicine.name == "Heferal" {
             // Create two events for Heferal, evenly spaced throughout the day, on empty stomach

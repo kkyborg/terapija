@@ -13,3 +13,4 @@
 
 # EXCEPTIONS
 
+- Eutirox: with dinner

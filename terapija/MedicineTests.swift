@@ -26,8 +26,10 @@ class MedicineTests {
         
         // Run tests
         testEutiroxRequirements(schedule)
+        testEutiroxInofolicSpacing(schedule)
         testGlukophageWithDinner(schedule)
         testMultipleDoseSpacing(schedule)
+        testAleractDoseSpacing(schedule)
         testUtrogestanNifelatSeparation(schedule)
         testHeferalWithVitaminC(schedule)
         testMealBasedRequirements(schedule)
@@ -130,6 +132,70 @@ class MedicineTests {
         }
     }
     
+    // Test the spacing between Eutirox and Inofolic doses
+    static func testEutiroxInofolicSpacing(_ schedule: DailySchedule) {
+        print("\n🧪 Testing Eutirox-Inofolic Spacing...")
+        
+        let eutiroxDoses = findDoses(for: "Eutirox", in: schedule)
+        let inofolicDoses = findDoses(for: "Inofolic Combi", in: schedule)
+        
+        if eutiroxDoses.isEmpty || inofolicDoses.isEmpty {
+            print("⚠️ WARNING: Could not find both Eutirox and Inofolic in schedule")
+            return
+        }
+        
+        // Get the first Eutirox dose of the day
+        guard let eutiroxDose = eutiroxDoses.first else {
+            print("❌ FAILED: Eutirox not found in schedule")
+            return
+        }
+        
+        // Get the first Inofolic dose of the day
+        let sortedInofolicDoses = inofolicDoses.sorted { timeToMinutes($0.event.time) < timeToMinutes($1.event.time) }
+        guard let firstInofolicDose = sortedInofolicDoses.first else {
+            print("❌ FAILED: Inofolic not found in schedule")
+            return
+        }
+        
+        // Check if Inofolic is scheduled after Eutirox
+        let eutiroxTime = eutiroxDose.event.time
+        let inofolicTime = firstInofolicDose.event.time
+        
+        if timeToMinutes(inofolicTime) <= timeToMinutes(eutiroxTime) {
+            print("❌ FAILED: Inofolic (\(inofolicTime)) is scheduled before or at the same time as Eutirox (\(eutiroxTime))")
+            return
+        }
+        
+        // Check spacing between Eutirox and Inofolic (should be at least 30 minutes apart)
+        let minRequiredSpacing = 30 // minutes
+        let spacing = minutesBetween(time1: eutiroxTime, time2: inofolicTime)
+        
+        if spacing < minRequiredSpacing {
+            print("❌ FAILED: Eutirox (\(eutiroxTime)) and Inofolic (\(inofolicTime)) are only \(spacing) minutes apart (required: at least \(minRequiredSpacing) minutes)")
+        } else {
+            print("✅ PASSED: Eutirox and Inofolic have sufficient spacing (\(spacing) minutes)")
+        }
+        
+        // If there are multiple Inofolic doses, check that none are too close to Eutirox
+        if sortedInofolicDoses.count > 1 {
+            var allSpacingOk = true
+            
+            for inofolicDose in sortedInofolicDoses.dropFirst() {
+                let doseTime = inofolicDose.event.time
+                let doseSpacing = minutesBetween(time1: eutiroxTime, time2: doseTime)
+                
+                if doseSpacing < minRequiredSpacing {
+                    print("❌ FAILED: Eutirox (\(eutiroxTime)) and Inofolic dose (\(doseTime)) are only \(doseSpacing) minutes apart (required: at least \(minRequiredSpacing) minutes)")
+                    allSpacingOk = false
+                }
+            }
+            
+            if allSpacingOk {
+                print("✅ PASSED: All Inofolic doses are sufficiently spaced from Eutirox")
+            }
+        }
+    }
+    
     // Test that Glukophage is taken with dinner
     static func testGlukophageWithDinner(_ schedule: DailySchedule) {
         print("\n🧪 Testing Glukophage With Dinner Requirement...")
@@ -159,7 +225,7 @@ class MedicineTests {
         print("\n🧪 Testing Multiple Dose Spacing...")
         
         // Medicines with multiple doses
-        let medicinesWithMultipleDoses = ["Nifelat", "Utrogestan 200mg", "Aleract", "Inofolic combi", "Heferal", "Vitamin C"]
+        let medicinesWithMultipleDoses = ["Nifelat", "Utrogestan 200mg", "Aleract", "Inofolic Combi", "Heferal", "Vitamin C"]
         
         for medicineName in medicinesWithMultipleDoses {
             let doses = findDoses(for: medicineName, in: schedule)
@@ -194,6 +260,75 @@ class MedicineTests {
                 }
             } else {
                 print("✅ PASSED: \(medicineName) doses have good spacing (minimum \(minSpacingMinutes) minutes)")
+            }
+        }
+    }
+    
+    // Test that Aleract doses are optimally spread throughout the day
+    static func testAleractDoseSpacing(_ schedule: DailySchedule) {
+        print("\n🧪 Testing Aleract Dose Distribution...")
+        
+        let aleractDoses = findDoses(for: "Aleract", in: schedule)
+        if aleractDoses.count <= 1 {
+            print("❌ FAILED: Expected multiple doses for Aleract, found \(aleractDoses.count)")
+            return
+        }
+        
+        // Sort doses by time
+        let sortedDoses = aleractDoses.sorted { timeToMinutes($0.event.time) < timeToMinutes($1.event.time) }
+        
+        // Get essential daily events
+        guard let wakeUp = schedule.events.first(where: { $0.type == .wakeUp }),
+              let breakfast = schedule.events.first(where: { $0.name == "Breakfast" }),
+              let sleep = schedule.events.first(where: { $0.type == .sleep }),
+              let dinner = schedule.events.first(where: { $0.name == "Dinner" }) else {
+            print("❌ FAILED: Could not find necessary daily events")
+            return
+        }
+        
+        let firstDose = sortedDoses[0]
+        let lastDose = sortedDoses[sortedDoses.count - 1]
+        
+        // Check if first dose is early enough (with breakfast or within 90 minutes of wake-up)
+        let isFirstDoseWithBreakfast = firstDose.event.time == breakfast.time
+        let minutesAfterWakeUp = minutesBetween(time1: wakeUp.time, time2: firstDose.event.time)
+        let isFirstDoseEarlyEnough = isFirstDoseWithBreakfast || minutesAfterWakeUp <= 90
+        
+        if isFirstDoseEarlyEnough {
+            print("✅ PASSED: First Aleract dose is scheduled early enough in the day")
+        } else {
+            print("❌ FAILED: First Aleract dose (\(firstDose.event.time)) is not scheduled early enough (required: with breakfast or within 90 min of waking)")
+        }
+        
+        // Check if the last dose is late enough but not too late
+        let isLastDoseWithDinner = lastDose.event.time == dinner.time
+        let minutesAfterLunch = minutesBetween(time1: "14:00", time2: lastDose.event.time)
+        
+        // Last dose requirements: should be after lunch
+        let isLastDoseLateEnough = isLastDoseWithDinner || minutesAfterLunch >= 180
+        
+        if isLastDoseLateEnough {
+            print("✅ PASSED: Last Aleract dose is scheduled late enough in the day")
+        } else {
+            print("❌ FAILED: Last Aleract dose (\(lastDose.event.time)) is not scheduled late enough (required: with dinner or at least 3 hours after lunch)")
+        }
+        
+        // For Aleract specifically (2 doses), check if doses are well distributed
+        if aleractDoses.count == 2 {
+            let wakeUpMinutes = timeToMinutes(wakeUp.time)
+            let sleepMinutes = timeToMinutes(sleep.time)
+            let wakingPeriodMinutes = sleepMinutes > wakeUpMinutes ? 
+                sleepMinutes - wakeUpMinutes : (24 * 60 - wakeUpMinutes) + sleepMinutes
+            
+            // For 2 doses, we want them to cover at least a specific percentage of the waking period
+            let doseSpan = minutesBetween(time1: firstDose.event.time, time2: lastDose.event.time)
+            let coveragePercentage = Double(doseSpan) / Double(wakingPeriodMinutes)
+            let minimumCoverageThreshold = 0.6 // 60%
+            
+            if coveragePercentage >= minimumCoverageThreshold {
+                print("✅ PASSED: Aleract doses cover a significant portion of the day (\(Int(coveragePercentage * 100))% coverage)")
+            } else {
+                print("❌ FAILED: Aleract doses don't cover enough of the day (only \(Int(coveragePercentage * 100))% coverage, required: at least \(Int(minimumCoverageThreshold * 100))%)")
             }
         }
     }
